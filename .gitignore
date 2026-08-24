@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+.pyinstaller/
+*.toc
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+.conda/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data files
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.feather
+output/
+outputs/
+workspace/
+tmp/
+
+# Runtime data
+runtime/
+chroma_db/
+milvus_data/
+data/
+generated_audio/
+*.db
+
+# Secrets and local configuration
+.env
+!.env.example
+*.pem
+*.key
+
+# Local model weights
+pretrain_models/
+models/
+
+# Logs
+*.log
+session_log.txt
+academic_agent.log
+
+# OS
+.DS_Store
+Thumbs.db
