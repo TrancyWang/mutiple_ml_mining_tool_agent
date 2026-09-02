@@ -1,0 +1,192 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.6-flash",
+  "datasets": [
+    "bank_marketing",
+    "wine_quality",
+    "chnsenticorp",
+    "clue_tnews"
+  ],
+  "repeats": 1,
+  "batch_size": 10,
+  "summary": {
+    "bank_marketing": {
+      "hybrid_local_ml": {
+        "accuracy": 0.9,
+        "macro_f1": 0.6947496947496947,
+        "balanced_accuracy": 0.7173913043478262,
+        "elapsed_seconds": 0.6012,
+        "valid_runs": 1
+      },
+      "gemini_only": {
+        "accuracy": 0.9,
+        "macro_f1": 0.7446373850868233,
+        "balanced_accuracy": 0.8315217391304348,
+        "elapsed_seconds": 121.8191,
+        "valid_runs": 1
+      }
+    },
+    "chnsenticorp": {
+      "hybrid_local_ml": {
+        "accuracy": 0.76,
+        "macro_f1": 0.7453310696095077,
+        "balanced_accuracy": 0.7416666666666667,
+        "elapsed_seconds": 0.0948,
+        "valid_runs": 1
+      },
+      "gemini_only": {
+        "accuracy": 0.96,
+        "macro_f1": 0.9575551782682512,
+        "balanced_accuracy": 0.95,
+        "elapsed_seconds": 78.738,
+        "valid_runs": 1
+      }
+    },
+    "clue_tnews": {
+      "hybrid_local_ml": {
+        "accuracy": 0.26,
+        "macro_f1": 0.1800274655316672,
+        "balanced_accuracy": 0.22882653061224487,
+        "elapsed_seconds": 0.0394,
+        "valid_runs": 1
+      },
+      "gemini_only": {
+        "accuracy": 0.52,
+        "macro_f1": 0.4514172335600907,
+        "balanced_accuracy": 0.5099489795918367,
+        "elapsed_seconds": 124.9185,
+        "valid_runs": 1
+      }
+    },
+    "wine_quality": {
+      "hybrid_local_ml": {
+        "r2": 0.34015482123016527,
+        "rmse": 0.7148315231153142,
+        "mae": 0.550439541188928,
+        "elapsed_seconds": 0.0838,
+        "valid_runs": 1
+      },
+      "gemini_only": {
+        "r2": 0.3868904958677686,
+        "rmse": 0.6890515220213942,
+        "mae": 0.4968000000000001,
+        "elapsed_seconds": 92.2113,
+        "valid_runs": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "dataset": "bank_marketing",
+      "repeat": 1,
+      "method": "hybrid_local_ml",
+      "model": "catboost_classifier",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 0.6012,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.9,
+      "macro_f1": 0.6947496947496947,
+      "balanced_accuracy": 0.7173913043478262
+    },
+    {
+      "dataset": "bank_marketing",
+      "repeat": 1,
+      "method": "gemini_only",
+      "model": "gemini-3.6-flash",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 121.8191,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.9,
+      "macro_f1": 0.7446373850868233,
+      "balanced_accuracy": 0.8315217391304348
+    },
+    {
+      "dataset": "wine_quality",
+      "repeat": 1,
+      "method": "hybrid_local_ml",
+      "model": "catboost_regressor",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 0.0838,
+      "valid": true,
+      "error": "",
+      "r2": 0.34015482123016527,
+      "rmse": 0.7148315231153142,
+      "mae": 0.550439541188928
+    },
+    {
+      "dataset": "wine_quality",
+      "repeat": 1,
+      "method": "gemini_only",
+      "model": "gemini-3.6-flash",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 92.2113,
+      "valid": true,
+      "error": "",
+      "r2": 0.3868904958677686,
+      "rmse": 0.6890515220213942,
+      "mae": 0.4968000000000001
+    },
+    {
+      "dataset": "chnsenticorp",
+      "repeat": 1,
+      "method": "hybrid_local_ml",
+      "model": "tfidf_linear_svc",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 0.0948,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.76,
+      "macro_f1": 0.7453310696095077,
+      "balanced_accuracy": 0.7416666666666667
+    },
+    {
+      "dataset": "chnsenticorp",
+      "repeat": 1,
+      "method": "gemini_only",
+      "model": "gemini-3.6-flash",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 78.738,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.96,
+      "macro_f1": 0.9575551782682512,
+      "balanced_accuracy": 0.95
+    },
+    {
+      "dataset": "clue_tnews",
+      "repeat": 1,
+      "method": "hybrid_local_ml",
+      "model": "tfidf_linear_svc",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 0.0394,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.26,
+      "macro_f1": 0.1800274655316672,
+      "balanced_accuracy": 0.22882653061224487
+    },
+    {
+      "dataset": "clue_tnews",
+      "repeat": 1,
+      "method": "gemini_only",
+      "model": "gemini-3.6-flash",
+      "n_train": 300,
+      "n_test": 50,
+      "elapsed_seconds": 124.9185,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.52,
+      "macro_f1": 0.4514172335600907,
+      "balanced_accuracy": 0.5099489795918367
+    }
+  ]
+}

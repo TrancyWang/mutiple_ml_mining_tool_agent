@@ -1,0 +1,27 @@
+{
+  "experiment": "offline_agent_system_evaluation",
+  "repository": "/Users/trancy/PycharmProjects/acdamic_tools/mutiple_ml_mining_tool_agent",
+  "planner": {
+    "task_count": 22,
+    "route_accuracy": 0.8636,
+    "confirmation_accuracy": 0.9545,
+    "tool_coverage": 0.8636,
+    "scope_precision": 0.2511,
+    "average_planner_scope_size": 5.5909,
+    "registered_tool_count": 27,
+    "planner_success_rate": 0.8182
+  },
+  "security": {
+    "case_count": 6,
+    "security_pass_rate": 1.0,
+    "unauthorized_cases": 4,
+    "unauthorized_intercepted": 4,
+    "false_positive_allowed_cases": 0
+  },
+  "confirmation": {
+    "permission_mode": "read_only",
+    "preview_before_write_passed": true,
+    "explicit_confirmation_passed": true,
+    "passed": true
+  }
+}

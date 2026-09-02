@@ -1,0 +1,115 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.6-flash",
+  "repeats": 1,
+  "summary": {
+    "classification": {
+      "gemini_only": {
+        "elapsed_seconds": 11.09654645898263,
+        "valid_runs": 0
+      },
+      "hybrid_sklearn": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "elapsed_seconds": 0.007120499998563901,
+        "valid_runs": 1
+      }
+    },
+    "regression": {
+      "gemini_only": {
+        "elapsed_seconds": 12.219819916994311,
+        "valid_runs": 0
+      },
+      "hybrid_sklearn": {
+        "r2": 0.995532003298238,
+        "rmse": 0.1948488421219355,
+        "mae": 0.17513993946337097,
+        "elapsed_seconds": 0.0061649999988731,
+        "valid_runs": 1
+      }
+    },
+    "sentiment": {
+      "gemini_only": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "elapsed_seconds": 7.494060458993772,
+        "valid_runs": 1
+      },
+      "hybrid_bert": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "elapsed_seconds": 1.6806542919948697,
+        "valid_runs": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "task": "sentiment",
+      "method": "gemini_only",
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "elapsed_seconds": 7.494060458993772,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    },
+    {
+      "task": "sentiment",
+      "method": "hybrid_bert",
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "elapsed_seconds": 1.6806542919948697,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    },
+    {
+      "task": "classification",
+      "method": "gemini_only",
+      "accuracy": null,
+      "macro_f1": null,
+      "r2": null,
+      "rmse": null,
+      "mae": null,
+      "elapsed_seconds": 11.09654645898263,
+      "n": 10,
+      "error": "ValueError: Gemini response is not JSON: 0\n0.7599737563757551,0.13338356190494294,-0.3767810369270609 -> 1\n\nLet's evaluate the score: S = w1*f1 + w2*f2 + w3*f3 + b\nLet's estimate",
+      "repeat": 1
+    },
+    {
+      "task": "classification",
+      "method": "hybrid_sklearn",
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "elapsed_seconds": 0.007120499998563901,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    },
+    {
+      "task": "regression",
+      "method": "gemini_only",
+      "accuracy": null,
+      "macro_f1": null,
+      "r2": null,
+      "rmse": null,
+      "mae": null,
+      "elapsed_seconds": 12.219819916994311,
+      "n": 10,
+      "error": "JSONDecodeError: Expecting ',' delimiter: line 1 column 152 (char 151)",
+      "repeat": 1
+    },
+    {
+      "task": "regression",
+      "method": "hybrid_sklearn",
+      "r2": 0.995532003298238,
+      "rmse": 0.1948488421219355,
+      "mae": 0.17513993946337097,
+      "elapsed_seconds": 0.0061649999988731,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    }
+  ]
+}

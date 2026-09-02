@@ -1,0 +1,57 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.6-flash",
+  "datasets": [
+    "bank_marketing"
+  ],
+  "repeats": 1,
+  "batch_size": 5,
+  "summary": {
+    "bank_marketing": {
+      "hybrid_local_ml": {
+        "accuracy": 0.9,
+        "macro_f1": 0.47368421052631576,
+        "balanced_accuracy": 0.47368421052631576,
+        "elapsed_seconds": 0.4642,
+        "valid_runs": 1
+      },
+      "gemini_only": {
+        "accuracy": 0.9,
+        "macro_f1": 0.7222222222222222,
+        "balanced_accuracy": 0.9473684210526316,
+        "elapsed_seconds": 49.0675,
+        "valid_runs": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "dataset": "bank_marketing",
+      "repeat": 1,
+      "method": "hybrid_local_ml",
+      "model": "catboost_classifier",
+      "n_train": 100,
+      "n_test": 20,
+      "elapsed_seconds": 0.4642,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.9,
+      "macro_f1": 0.47368421052631576,
+      "balanced_accuracy": 0.47368421052631576
+    },
+    {
+      "dataset": "bank_marketing",
+      "repeat": 1,
+      "method": "gemini_only",
+      "model": "gemini-3.6-flash",
+      "n_train": 100,
+      "n_test": 20,
+      "elapsed_seconds": 49.0675,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.9,
+      "macro_f1": 0.7222222222222222,
+      "balanced_accuracy": 0.9473684210526316
+    }
+  ]
+}

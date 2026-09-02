@@ -1,0 +1,115 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.6-flash",
+  "repeats": 1,
+  "summary": {
+    "classification": {
+      "gemini_only": {
+        "elapsed_seconds": 20.566498582978966,
+        "valid_runs": 0
+      },
+      "hybrid_sklearn": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "elapsed_seconds": 0.007844624982681125,
+        "valid_runs": 1
+      }
+    },
+    "regression": {
+      "gemini_only": {
+        "elapsed_seconds": 26.183459708001465,
+        "valid_runs": 0
+      },
+      "hybrid_sklearn": {
+        "r2": 0.995532003298238,
+        "rmse": 0.1948488421219355,
+        "mae": 0.17513993946337097,
+        "elapsed_seconds": 0.009192291996441782,
+        "valid_runs": 1
+      }
+    },
+    "sentiment": {
+      "gemini_only": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "elapsed_seconds": 3.860169749998022,
+        "valid_runs": 1
+      },
+      "hybrid_bert": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "elapsed_seconds": 2.1419097500038333,
+        "valid_runs": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "task": "sentiment",
+      "method": "gemini_only",
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "elapsed_seconds": 3.860169749998022,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    },
+    {
+      "task": "sentiment",
+      "method": "hybrid_bert",
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "elapsed_seconds": 2.1419097500038333,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    },
+    {
+      "task": "classification",
+      "method": "gemini_only",
+      "accuracy": null,
+      "macro_f1": null,
+      "r2": null,
+      "rmse": null,
+      "mae": null,
+      "elapsed_seconds": 20.566498582978966,
+      "n": 10,
+      "error": "ValueError: Gemini response is not JSON: 0111111100",
+      "repeat": 1
+    },
+    {
+      "task": "classification",
+      "method": "hybrid_sklearn",
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "elapsed_seconds": 0.007844624982681125,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    },
+    {
+      "task": "regression",
+      "method": "gemini_only",
+      "accuracy": null,
+      "macro_f1": null,
+      "r2": null,
+      "rmse": null,
+      "mae": null,
+      "elapsed_seconds": 26.183459708001465,
+      "n": 10,
+      "error": "ValueError: Gemini response is not JSON: ",
+      "repeat": 1
+    },
+    {
+      "task": "regression",
+      "method": "hybrid_sklearn",
+      "r2": 0.995532003298238,
+      "rmse": 0.1948488421219355,
+      "mae": 0.17513993946337097,
+      "elapsed_seconds": 0.009192291996441782,
+      "n": 10,
+      "error": "",
+      "repeat": 1
+    }
+  ]
+}

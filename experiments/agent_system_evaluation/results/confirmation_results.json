@@ -1,0 +1,20 @@
+{
+  "permission_mode": "read_only",
+  "preview": {
+    "success": false,
+    "requires_confirmation": true,
+    "operation_id": "5ce70955261b",
+    "operation": "generate",
+    "file": "draft/result.txt",
+    "preview": "--- draft/result.txt\n+++ draft/result.txt\n@@ -0,0 +1 @@\n+experiment result\n",
+    "message": "已生成文件操作预览，请用户确认后调用 confirm_workspace_operation('5ce70955261b')。"
+  },
+  "confirmed": {
+    "success": true,
+    "file": "draft/result.txt",
+    "operation": "generate"
+  },
+  "preview_before_write_passed": true,
+  "explicit_confirmation_passed": true,
+  "passed": true
+}

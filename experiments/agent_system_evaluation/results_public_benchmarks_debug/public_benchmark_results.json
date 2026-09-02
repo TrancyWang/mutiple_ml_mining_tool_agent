@@ -1,0 +1,57 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.6-flash",
+  "datasets": [
+    "chnsenticorp"
+  ],
+  "repeats": 1,
+  "batch_size": 5,
+  "summary": {
+    "chnsenticorp": {
+      "hybrid_local_ml": {
+        "accuracy": 0.7,
+        "macro_f1": 0.6000000000000001,
+        "balanced_accuracy": 0.5952380952380952,
+        "elapsed_seconds": 0.0231,
+        "valid_runs": 1
+      },
+      "gemini_only": {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "balanced_accuracy": 1.0,
+        "elapsed_seconds": 21.3412,
+        "valid_runs": 1
+      }
+    }
+  },
+  "results": [
+    {
+      "dataset": "chnsenticorp",
+      "repeat": 1,
+      "method": "hybrid_local_ml",
+      "model": "tfidf_linear_svc",
+      "n_train": 50,
+      "n_test": 10,
+      "elapsed_seconds": 0.0231,
+      "valid": true,
+      "error": "",
+      "accuracy": 0.7,
+      "macro_f1": 0.6000000000000001,
+      "balanced_accuracy": 0.5952380952380952
+    },
+    {
+      "dataset": "chnsenticorp",
+      "repeat": 1,
+      "method": "gemini_only",
+      "model": "gemini-3.6-flash",
+      "n_train": 50,
+      "n_test": 10,
+      "elapsed_seconds": 21.3412,
+      "valid": true,
+      "error": "",
+      "accuracy": 1.0,
+      "macro_f1": 1.0,
+      "balanced_accuracy": 1.0
+    }
+  ]
+}

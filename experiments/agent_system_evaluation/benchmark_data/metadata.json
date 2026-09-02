@@ -1,0 +1,48 @@
+{
+  "sources": {
+    "bank_marketing": {
+      "task": "tabular_classification",
+      "url": "https://archive.ics.uci.edu/static/public/222/bank+marketing.zip",
+      "citation": "Moro, Rita, and Cortez (2014), UCI Machine Learning Repository",
+      "license": "CC BY 4.0",
+      "description": "Predict whether a bank customer subscribes to a term deposit."
+    },
+    "wine_quality": {
+      "task": "tabular_regression_and_ordinal_classification",
+      "url": "https://archive.ics.uci.edu/static/public/186/wine+quality.zip",
+      "citation": "Cortez et al. (2009), UCI Machine Learning Repository",
+      "license": "CC BY 4.0",
+      "description": "Predict wine quality from physicochemical measurements."
+    },
+    "chnsenticorp": {
+      "task": "chinese_sentiment_classification",
+      "url": "https://huggingface.co/datasets/seamew/ChnSentiCorp",
+      "citation": "ChnSentiCorp; source card reports 9,600/1,200/1,200 examples",
+      "license": "Not specified on the source card; verify before redistribution",
+      "description": "Chinese binary sentiment classification."
+    },
+    "clue_tnews": {
+      "task": "chinese_topic_classification",
+      "url": "https://github.com/CLUEbenchmark/CLUE",
+      "citation": "CLUE benchmark; TNEWS short-text news classification",
+      "license": "Unknown on the Hugging Face dataset card; use source terms",
+      "description": "Chinese short-text news classification with 15 categories."
+    }
+  },
+  "counts": {
+    "tabular": {
+      "bank_marketing": 45211,
+      "wine_quality": 6497
+    },
+    "chnsenticorp": {
+      "train": 9600,
+      "validation": 1200,
+      "test": 1200
+    },
+    "clue_tnews": {
+      "train": 53360,
+      "validation": 10000,
+      "test": 10000
+    }
+  }
+}
