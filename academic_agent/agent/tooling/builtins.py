@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from academic_agent.agent.session import SessionContext
-from academic_agent.agent.tooling.handlers import data, mining, ml, project, visualization
+from academic_agent.agent.tooling.handlers import data, mining, ml, project, rag, visualization
 from academic_agent.agent.tooling.registry import ToolSpec, tool_registry
 from academic_agent.infrastructure.workspace_manager import workspace_manager
 
@@ -19,6 +19,7 @@ def register_builtin_tools() -> None:
         ToolSpec("data_statistics", "数据统计分析", "数据理解", "生成数据质量、描述统计、类别分布和相关性报告", data.data_statistics),
         ToolSpec("data_preprocess", "数据预处理", "数据理解", "执行缺失值处理和重复行处理，原始数据不覆盖", data.data_preprocess),
         ToolSpec("feature_processing", "特征处理", "机器学习", "识别数值/类别特征并完成填充、编码和标准化", data.feature_processing),
+        ToolSpec("document_rag", "文档检索", "文档 RAG", "解析 PDF/Markdown/TXT/DOCX/CSV/JSON，按结构检索并返回带页码和引用的证据", rag.search_documents, requires_data=False),
         ToolSpec("preprocess_text", "文本预处理", "文本挖掘", "调用 video_text_mutiplemodal_agent.Data_PreProcessor", mining.preprocess),
         ToolSpec("sentiment_analysis", "情感分析", "文本挖掘", "调用 video_text_mutiplemodal_agent 情感模型", mining.sentiment),
         ToolSpec("text_clustering", "文本聚类", "文本挖掘", "调用 video_text_mutiplemodal_agent.VideoTextClustering", mining.clustering),
@@ -65,6 +66,21 @@ def execute_tool(name: str, context: SessionContext | None = None, **kwargs: Any
             kwargs["_source_scope"] = "upload" if candidate in uploaded else "workspace"
         elif name == "execute_python_analysis":
             kwargs["_allowed_uploaded_files"] = list(context.uploaded_files)
+        elif name == "document_rag":
+            kwargs["_session_files"] = list(context.uploaded_files)
+            kwargs["_workspace_path"] = str(workspace_manager.root)
+            requested = kwargs.get("file_paths") or []
+            allowed_roots = [workspace_manager.root.resolve()]
+            allowed_files = {Path(path).expanduser().resolve() for path in context.uploaded_files}
+            safe_paths = []
+            for raw_path in requested:
+                candidate = Path(str(raw_path)).expanduser().resolve()
+                if candidate in allowed_files or any(candidate == root or root in candidate.parents for root in allowed_roots):
+                    safe_paths.append(str(candidate))
+            if requested and len(safe_paths) != len(requested):
+                return {"success": False, "error": "文档 RAG 只能读取当前工作区或用户主动上传的文件。"}
+            if requested:
+                kwargs["file_paths"] = safe_paths
     result = tool_registry.execute(name, **kwargs)
     if context is not None:
         context.record_task(name, result)

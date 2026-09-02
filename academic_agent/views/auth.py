@@ -1,8 +1,9 @@
-"""Qt6 登录与模型凭据配置。"""
+"""PySide6 登录与模型凭据配置。"""
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
@@ -59,6 +60,7 @@ class LoginDialog(QDialog):
             QLineEdit, QComboBox { background:#ffffff; color:#245c36; border:1px solid #bcd9c4; border-radius:12px; padding:10px 13px; min-height:30px; }
             QLineEdit:focus, QComboBox:focus { border:2px solid #43a047; }
             QCheckBox { color:#245c36; padding:6px 0; }
+            QLabel#mode_hint { color:#5a8968; font-size:12px; padding:2px 0; }
             QPushButton { background:#ffffff; color:#245c36; border:1px solid #bcd9c4; border-radius:12px; padding:9px 18px; min-height:24px; }
             QPushButton:hover { background:#e8f5e9; border-color:#43a047; }
             QPushButton[text="登录"] { background:#43a047; color:#ffffff; border-color:#388e3c; border-radius:17px; font-weight:600; }
@@ -82,6 +84,10 @@ class LoginDialog(QDialog):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(12)
         self.username_edit = QLineEdit()
+        self.username_edit.setObjectName("username_edit")
+        self.username_edit.setEnabled(True)
+        self.username_edit.setReadOnly(False)
+        self.username_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.username_edit.setPlaceholderText("用户名")
         self.username_edit.textChanged.connect(self._update_root_fields)
         self.password_edit = QLineEdit()
@@ -90,6 +96,7 @@ class LoginDialog(QDialog):
         self.provider_combo = QComboBox()
         self.provider_combo.addItem("Gemini", "gemini")
         self.provider_combo.addItem("千问（新加坡）", "qwen")
+        self.provider_combo.addItem("千问（北京）", "qwen-beijing")
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setPlaceholderText("请输入对应服务的 API Key")
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -98,6 +105,10 @@ class LoginDialog(QDialog):
         form.addRow("模型服务", self.provider_combo)
         form.addRow("API Key", self.api_key_edit)
         layout.addLayout(form)
+
+        self.mode_hint = QLabel(objectName="mode_hint")
+        self.mode_hint.setWordWrap(True)
+        layout.addWidget(self.mode_hint)
 
         self.remember_key = QCheckBox("记住 API Key（保存在本机 SQLite，下次自动填充）")
         self.remember_key.setChecked(True)
@@ -108,6 +119,10 @@ class LoginDialog(QDialog):
 
         buttons = QDialogButtonBox()
         login_button = buttons.addButton("登录", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.login_button = login_button
+        self.login_button.setDefault(True)
+        self.login_button.setAutoDefault(True)
+        self.login_button.setMinimumWidth(110)
         buttons.addButton("退出", QDialogButtonBox.ButtonRole.RejectRole)
         login_button.clicked.connect(self._submit)
         buttons.rejected.connect(self.reject)
@@ -115,6 +130,18 @@ class LoginDialog(QDialog):
 
         self._restore_last_account()
         self._update_root_fields(self.username_edit.text())
+        # 部分平台会在模态窗口显示时把焦点交给按钮或下拉框；延迟到
+        # event loop 后重新聚焦，保证用户打开登录框即可直接输入用户名。
+        QTimer.singleShot(0, self._focus_username)
+
+    def _focus_username(self) -> None:
+        """让用户名输入框在窗口显示后获得焦点，并选中已恢复的旧用户名。"""
+        if not self.isVisible():
+            return
+        self.username_edit.setEnabled(True)
+        self.username_edit.setReadOnly(False)
+        self.username_edit.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.username_edit.selectAll()
 
     def _update_root_fields(self, username: str) -> None:
         """管理员凭据来自 .env，不让 API Key 输入框造成必须填写的误解。"""
@@ -125,8 +152,10 @@ class LoginDialog(QDialog):
         if is_root_name:
             self.api_key_edit.clear()
             self.api_key_edit.setPlaceholderText("管理员登录后自动读取应用内 .env")
+            self.mode_hint.setText("管理员模式：只需填写密码，模型配置会从应用内 .env 自动读取。")
         else:
             self.api_key_edit.setPlaceholderText("请输入对应服务的 API Key")
+            self.mode_hint.setText("普通用户模式：密码可以留空，但必须填写所选模型服务的 API Key。")
 
     def _restore_last_account(self) -> None:
         account = auth_controller.last_account()

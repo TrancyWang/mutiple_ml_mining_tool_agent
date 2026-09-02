@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
 
 from academic_agent.infrastructure.workspace_manager import WorkspaceManager, workspace_manager
 

@@ -149,8 +149,14 @@ class SourceVideoTextAdapter:
         data: pd.DataFrame,
         text_column: str,
         n_clusters: int = 5,
+        algorithm: str = "kmeans",
+        eps: float = 0.5,
+        min_samples: int = 5,
         output_file: str | None = None,
     ) -> pd.DataFrame:
+        algorithm = str(algorithm or "kmeans").lower()
+        if algorithm not in {"kmeans", "agglomerative", "dbscan"}:
+            raise ValueError("聚类算法仅支持 kmeans、agglomerative 或 dbscan")
         module = self._load("text_processor_subagent_stage_3.clustering.clustering")
         work = data[[text_column]].copy()
         work["_agent_row_id"] = list(range(len(work)))
@@ -158,16 +164,37 @@ class SourceVideoTextAdapter:
         with tempfile.TemporaryDirectory(prefix="academic_cluster_") as temp_dir:
             temp_input = Path(temp_dir) / "source_cluster_input.csv"
             work.rename(columns={text_column: "text_for_bert"}).to_csv(temp_input, index=False, encoding="utf-8-sig")
-            clusterer = module.VideoTextClustering()
-            clustered = clusterer.cluster_video_texts(
-                str(temp_input),
-                n_clusters=n_clusters,
-                is_silhouette=False,
-                is_reduce_dimension=False,
-                output_file=output_file,
-                text_column="text_for_bert",
-                id_column="_agent_row_id",
-            )
+            if algorithm == "kmeans":
+                clusterer = module.VideoTextClustering()
+                clustered = clusterer.cluster_video_texts(
+                    str(temp_input),
+                    n_clusters=n_clusters,
+                    is_silhouette=False,
+                    is_reduce_dimension=False,
+                    output_file=output_file,
+                    text_column="text_for_bert",
+                    id_column="_agent_row_id",
+                )
+            else:
+                # The source implementation exposes KMeans only. Reuse its BGE
+                # embedding component for the two additional standard methods.
+                clusterer = module.Clustering()
+                embeddings = clusterer.get_text_embedding(work["text_for_bert"].astype(str).tolist())
+                if embeddings is None:
+                    raise RuntimeError("文本向量生成失败，无法进行聚类")
+                if algorithm == "agglomerative":
+                    from sklearn.cluster import AgglomerativeClustering
+
+                    model = AgglomerativeClustering(n_clusters=int(n_clusters))
+                else:
+                    from sklearn.cluster import DBSCAN
+
+                    model = DBSCAN(eps=float(eps), min_samples=int(min_samples))
+                labels = model.fit_predict(embeddings)
+                clustered = pd.DataFrame({
+                    "_agent_row_id": work["_agent_row_id"].to_numpy(),
+                    "cluster_id": labels,
+                })
             return clustered.rename(columns={"_agent_row_id": "row_id", "cluster_id": "cluster"})
 
     def keywords_by_group(
@@ -215,4 +242,3 @@ class SourceVideoTextAdapter:
 
 
 source_video_text_adapter = SourceVideoTextAdapter()
-

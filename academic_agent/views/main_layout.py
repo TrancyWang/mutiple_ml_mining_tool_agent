@@ -1,11 +1,11 @@
 """主窗口布局构建器。保持 Qt 组件创建与窗口生命周期逻辑分离。"""
 
-from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QIcon, QKeySequence, QPainter, QPen, QPixmap, QFont, QShortcut
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon, QKeySequence, QPainter, QPen, QPixmap, QFont, QShortcut
+from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QMenu,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
-    QSplitter, QStatusBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QStatusBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
 from academic_agent.views.styles import BASE_STYLESHEET
@@ -106,12 +106,18 @@ def build_main_window(window) -> None:
     self.account_identity_label = QLabel(objectName="account_identity")
     self.account_identity_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     side_bottom.addWidget(self.account_identity_label, 1)
+    self.login_btn = QPushButton("登录账户", objectName="login_button")
+    self.login_btn.setToolTip("使用用户名和密码登录")
+    self.login_btn.setMinimumHeight(38)
+    self.login_btn.clicked.connect(self.open_login)
+    side_bottom.addWidget(self.login_btn)
     self.account_btn = QToolButton(objectName="account_button")
     self.account_btn.setText("···")
+    self.account_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     self.account_btn.setArrowType(Qt.ArrowType.NoArrow)
     self.account_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-    self.account_btn.setMinimumSize(38, 38)
-    self.account_btn.setMaximumWidth(42)
+    self.account_btn.setMinimumSize(78, 38)
+    self.account_btn.setMaximumWidth(104)
     self.account_btn.setToolTip("账户菜单")
     side_bottom.addWidget(self.account_btn)
     side_layout.addWidget(account_bar)
@@ -155,11 +161,52 @@ def build_main_window(window) -> None:
     self.chat_view.anchorClicked.connect(self._handle_chat_link)
     center_layout.addWidget(self.chat_view, 1)
 
+    # 计划确认和关键信息补充都以内嵌操作卡片呈现，不用模态对话框打断对话。
+    self.agent_action_panel = QFrame(objectName="agent_action_panel")
+    self.agent_action_panel.setVisible(False)
+    self.agent_action_panel.setSizePolicy(
+        QSizePolicy.Policy.Preferred,
+        QSizePolicy.Policy.Maximum,
+    )
+    action_layout = QVBoxLayout(self.agent_action_panel)
+    action_layout.setContentsMargins(14, 11, 14, 11)
+    action_layout.setSpacing(7)
+    self.agent_action_title = QLabel(objectName="agent_action_title")
+    action_layout.addWidget(self.agent_action_title)
+    self.agent_action_context = QLabel(objectName="agent_action_context")
+    self.agent_action_context.setWordWrap(True)
+    action_layout.addWidget(self.agent_action_context)
+    self.agent_action_details = QPlainTextEdit(objectName="agent_action_details")
+    self.agent_action_details.setReadOnly(True)
+    self.agent_action_details.setMaximumHeight(170)
+    action_layout.addWidget(self.agent_action_details)
+    self.agent_action_hint = QLabel(objectName="agent_action_hint")
+    self.agent_action_hint.setWordWrap(True)
+    action_layout.addWidget(self.agent_action_hint)
+    self.agent_action_options = QWidget(objectName="agent_action_options")
+    self.agent_action_options_layout = QVBoxLayout(self.agent_action_options)
+    self.agent_action_options_layout.setContentsMargins(0, 0, 0, 0)
+    self.agent_action_options_layout.setSpacing(5)
+    self.agent_action_options.setVisible(False)
+    action_layout.addWidget(self.agent_action_options)
+    action_buttons = QHBoxLayout()
+    action_buttons.addStretch()
+    self.agent_action_cancel_btn = QPushButton("取消这次任务", objectName="agent_action_cancel")
+    self.agent_action_submit_btn = QPushButton("提交信息", objectName="agent_action_submit")
+    self.agent_action_cancel_btn.clicked.connect(self._cancel_pending_action)
+    self.agent_action_submit_btn.clicked.connect(self._submit_pending_clarification)
+    action_buttons.addWidget(self.agent_action_cancel_btn)
+    action_buttons.addWidget(self.agent_action_submit_btn)
+    action_layout.addLayout(action_buttons)
+    center_layout.addWidget(self.agent_action_panel)
+
     composer_box = QFrame(objectName="composer_box")
     composer_layout = QVBoxLayout(composer_box)
     composer_layout.setContentsMargins(8, 6, 8, 7)
-    self.upload_btn = QPushButton("＋ 添加文件")
-    self.upload_btn.setToolTip("上传数据文件")
+    self.upload_btn = QPushButton("上传文件", objectName="upload_button")
+    self.upload_btn.setToolTip("上传数据或文档到当前对话")
+    self.upload_btn.setAccessibleName("上传文件")
+    self.upload_btn.setMinimumWidth(96)
     self.upload_btn.clicked.connect(self.upload_file)
     self.composer = QPlainTextEdit(objectName="composer")
     self.composer.setPlaceholderText("给 Academic Agent 发送消息…")
@@ -174,13 +221,14 @@ def build_main_window(window) -> None:
         "auto": "自动",
         "gemini": "Gemini",
         "qwen": "Qwen 新加坡",
+        "qwen-beijing": "Qwen 北京",
         "ollama": "Ollama 本地",
     }
     self.model_btn = QPushButton(
         f"模型：{model_labels.get(self.model_provider, '自动')}",
         objectName="model_button",
     )
-    self.model_btn.setToolTip("切换对话模型；自动模式保持 Gemini 默认、Qwen 新加坡兜底")
+    self.model_btn.setToolTip("切换对话模型；自动模式按 Gemini → Qwen → Ollama 选择")
     model_menu = QMenu(self.model_btn)
     model_menu.addAction(
         "自动（Gemini → Qwen → Ollama）",
@@ -193,6 +241,10 @@ def build_main_window(window) -> None:
     model_menu.addAction(
         "Qwen 新加坡",
         lambda checked=False: self.switch_model_provider("qwen"),
+    )
+    model_menu.addAction(
+        "Qwen 北京",
+        lambda checked=False: self.switch_model_provider("qwen-beijing"),
     )
     model_menu.addAction(
         "Ollama：qwen3.5:2b（推荐工具调用）",
@@ -208,6 +260,19 @@ def build_main_window(window) -> None:
     model_menu.addAction("恢复默认模型目录", self.reset_model_directory)
     self.model_btn.setMenu(model_menu)
     composer_bar.addWidget(self.model_btn)
+
+    # Plan 审批属于当前输入动作，固定放在模型按钮旁边，避免用户到弹出的卡片里寻找操作。
+    # 这两个按钮只在 Runtime 等待 Plan Review 时显示，平时不占用输入区。
+    self.agent_action_confirm_btn = QPushButton("请求批准", objectName="agent_action_confirm")
+    self.agent_action_confirm_btn.setToolTip("确认当前 Plan，按人工确认模式继续执行")
+    self.agent_action_confirm_btn.setVisible(False)
+    self.agent_action_confirm_btn.clicked.connect(self._request_plan_approval)
+    self.agent_action_auto_btn = QPushButton("帮我批准", objectName="agent_action_auto")
+    self.agent_action_auto_btn.setToolTip("自动确认当前 Plan，并自动选择规划建议继续执行")
+    self.agent_action_auto_btn.setVisible(False)
+    self.agent_action_auto_btn.clicked.connect(self._auto_approve_plan)
+    composer_bar.addWidget(self.agent_action_confirm_btn)
+    composer_bar.addWidget(self.agent_action_auto_btn)
     composer_bar.addStretch()
     composer_bar.addWidget(self.send_btn)
     composer_layout.addLayout(composer_bar)
@@ -225,6 +290,12 @@ def build_main_window(window) -> None:
     right_layout.setContentsMargins(12, 14, 12, 12)
     right_layout.setSpacing(8)
 
+    self.right_content_stack = QStackedWidget()
+    self.common_page = QWidget()
+    common_page_layout = QVBoxLayout(self.common_page)
+    common_page_layout.setContentsMargins(0, 0, 0, 0)
+    common_page_layout.setSpacing(8)
+
     self.common_toggle = QToolButton()
     self.common_toggle.setObjectName("common_toggle")
     self.common_toggle.setText("常用功能")
@@ -233,9 +304,8 @@ def build_main_window(window) -> None:
     self.common_toggle.setCheckable(True)
     self.common_toggle.setChecked(True)
     self.common_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    right_layout.addWidget(self.common_toggle)
+    common_page_layout.addWidget(self.common_toggle)
 
-    self.right_content_splitter = QSplitter(Qt.Orientation.Vertical)
     self.common_panel = QWidget()
     common_layout = QVBoxLayout(self.common_panel)
     common_layout.setContentsMargins(0, 0, 0, 0)
@@ -243,23 +313,21 @@ def build_main_window(window) -> None:
     self.common_scroll = QScrollArea(objectName="common_scroll")
     self.common_scroll.setWidgetResizable(True)
     self.common_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    self.common_scroll.setMinimumHeight(260)
     self.common_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     self.common_scroll.setWidget(self.common_panel)
     self.common_toggle.toggled.connect(
         lambda checked: self._toggle_feature_group(self.common_toggle, self.common_scroll, checked)
     )
-    self.right_content_splitter.addWidget(self.common_scroll)
+    common_page_layout.addWidget(self.common_scroll, 1)
     self._build_feature_sections(common_layout)
 
     self.file_panel = self._build_file_panel()
-    self.right_content_splitter.addWidget(self.file_panel)
-    self.right_content_splitter.setStretchFactor(0, 1)
-    self.right_content_splitter.setStretchFactor(1, 2)
-    right_layout.addWidget(self.right_content_splitter, 1)
+    self.right_content_stack.addWidget(self.common_page)
+    self.right_content_stack.addWidget(self.file_panel)
+    self.right_content_stack.setCurrentWidget(self.common_page)
+    right_layout.addWidget(self.right_content_stack, 1)
     splitter.addWidget(self.right_sidebar)
     self.file_panel_open = False
-    self.file_panel.hide()
     splitter.setStretchFactor(1, 1)
     splitter.setStretchFactor(2, 0)
     splitter.setSizes([276, 664, 340])

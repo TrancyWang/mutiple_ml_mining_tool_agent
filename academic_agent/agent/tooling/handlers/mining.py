@@ -23,7 +23,9 @@ def clustering(**kwargs: Any) -> dict[str, Any]:
     from academic_agent.application.services.text_mining_service import text_mining_service
 
     return text_mining_service.clustering(
-        kwargs.get("text_column"), int(kwargs.get("n_clusters", 5))
+        kwargs.get("text_column"), int(kwargs.get("n_clusters", 5)),
+        kwargs.get("algorithm", "kmeans"), float(kwargs.get("eps", 0.5)),
+        int(kwargs.get("min_samples", 5)),
     )
 
 

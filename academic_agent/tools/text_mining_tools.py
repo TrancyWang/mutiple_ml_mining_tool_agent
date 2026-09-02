@@ -82,6 +82,19 @@ class TextMiningTools:
                     
         return longest_col
 
+    def get_data_info(self) -> Dict[str, Any]:
+        """Return a lightweight schema summary for the registered data tool."""
+        if self.current_data is None:
+            return {"success": False, "error": "请先加载数据"}
+        return {
+            "success": True,
+            "rows": int(len(self.current_data)),
+            "columns": int(len(self.current_data.columns)),
+            "column_names": [str(column) for column in self.current_data.columns],
+            "dtypes": {str(column): str(dtype) for column, dtype in self.current_data.dtypes.items()},
+            "text_column": self.auto_detect_text_column(),
+        }
+
     def load_data(
         self, file_path: str, encoding: str = "UTF-8", source_scope: str | None = None
     ) -> Dict[str, Any]:
@@ -316,7 +329,10 @@ class TextMiningTools:
     
     def text_clustering(self,
                        text_column: Optional[str] = None,
-                       n_clusters: int = 5) -> Dict[str, Any]:
+                       n_clusters: int = 5,
+                       algorithm: str = "kmeans",
+                       eps: float = 0.5,
+                       min_samples: int = 5) -> Dict[str, Any]:
         """BGE 文本聚类，保留源项目 cid/text/cluster_id 主结果结构。"""
         try:
             if self.current_data is None:
@@ -334,11 +350,17 @@ class TextMiningTools:
             if not texts:
                 return {"success": False, "error": "没有有效文本数据"}
 
-            self._runtime_log("text_clustering", f"加载 BGE 与聚类算法；文本={len(texts)} 条；聚类数={n_clusters}")
+            self._runtime_log(
+                "text_clustering",
+                f"加载 BGE 与 {algorithm} 聚类算法；文本={len(texts)} 条；聚类数={n_clusters}",
+            )
             clustered = source_video_text_adapter.clustering(
                 self.current_data,
                 text_column=text_column,
                 n_clusters=n_clusters,
+                algorithm=algorithm,
+                eps=eps,
+                min_samples=min_samples,
             )
             self.current_data["cluster_id"] = pd.NA
             for _, row in clustered.iterrows():
@@ -366,18 +388,53 @@ class TextMiningTools:
                 '原始数据与结果': self.current_data.copy(),
             })
             cluster_counts = source_compatible['cluster_id'].value_counts().to_dict()
+            cluster_distribution = []
+            cluster_profiles = []
+            for cluster_id, group in source_compatible.groupby('cluster_id', sort=True):
+                cluster_id = int(cluster_id)
+                segment_count = int(len(group))
+                percentage = round(segment_count / max(len(source_compatible), 1), 6)
+                representative_texts = [
+                    str(value).replace("\n", " ").strip()[:180]
+                    for value in group['text'].head(3).tolist()
+                    if str(value).strip()
+                ]
+                cluster_distribution.append({
+                    "cluster_id": cluster_id,
+                    "segment_count": segment_count,
+                    "percentage": percentage,
+                })
+                cluster_profiles.append({
+                    "cluster_id": cluster_id,
+                    "segment_count": segment_count,
+                    "percentage": percentage,
+                    "representative_texts": representative_texts,
+                })
+            distribution_text = "；".join(
+                f"簇{item['cluster_id']}={item['segment_count']}条（{item['percentage']:.2%}）"
+                for item in cluster_distribution
+            )
 
             return {
                 "success": True,
-                "message": f"文本聚类完成，共分为 {n_clusters} 个簇。",
+                "message": f"文本聚类完成，使用 {algorithm}，共得到 {source_compatible['cluster_id'].nunique()} 个簇。",
                 "output_file": str(excel_path),
                 "output_files": artifact_result([excel_path, csv_path]),
                 "artifacts": artifact_result([excel_path, csv_path]),
                 "preview": source_compatible.head(5).to_dict('records'),
-                "algorithm": "BGE/SentenceTransformer + KMeans (source project)",
+                "algorithm": f"BGE/SentenceTransformer + {algorithm}",
                 "implementation": "text_processor_subagent_stage_3.clustering.clustering.VideoTextClustering",
+                "algorithm_name": str(algorithm).lower(),
                 "n_clusters": n_clusters,
                 "cluster_sizes": [int(cluster_counts.get(i, 0)) for i in sorted(cluster_counts)],
+                # 这些结构化摘要随工具观察返回给 Agent，避免主模型只能看到
+                # 输出文件名和前几行样例，进而生成被截断或不完整的聚类说明。
+                "cluster_distribution": cluster_distribution,
+                "cluster_profiles": cluster_profiles,
+                "summary_for_agent": (
+                    f"共得到 {len(cluster_distribution)} 个主题簇；完整分布：{distribution_text}。"
+                    "每个簇的代表文本已在 cluster_profiles 中提供，可据此概括主题特征。"
+                ),
             }
             
         except Exception as e:

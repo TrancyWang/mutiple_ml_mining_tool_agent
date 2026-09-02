@@ -5,13 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPlainTextEdit,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -22,7 +21,7 @@ from academic_agent.infrastructure.workspace_manager import workspace_manager
 
 
 class FilePanelMixin:
-    """管理文件树、筛选、打开、预览和定时刷新。"""
+    """管理文件树、筛选和定时刷新。"""
 
     def _build_file_panel(self) -> QFrame:
         panel = QFrame(objectName="file_panel")
@@ -52,16 +51,8 @@ class FilePanelMixin:
 
         self.file_tree = QTreeWidget(objectName="file_tree")
         self.file_tree.setHeaderHidden(True)
-        self.file_tree.itemClicked.connect(self._open_workspace_file)
         panel_layout.addWidget(self.file_tree, 2)
-
-        self.file_preview = QPlainTextEdit(objectName="file_preview")
-        self.file_preview.setReadOnly(True)
-        self.file_preview.setPlaceholderText("从当前工作区选择文件查看内容")
-        self.current_open_file: str | None = None
-        self.current_open_file_mtime: float = 0.0
         self._file_tree_last_refresh = 0.0
-        panel_layout.addWidget(self.file_preview, 3)
         self._refresh_file_tree()
         return panel
 
@@ -69,10 +60,11 @@ class FilePanelMixin:
         if not self.ensure_authenticated():
             return
         self.file_panel_open = not self.file_panel_open
-        self.file_panel.setVisible(self.file_panel_open)
+        self.right_content_stack.setCurrentWidget(
+            self.file_panel if self.file_panel_open else self.common_page
+        )
         if self.file_panel_open:
             self._refresh_file_tree()
-            self.right_content_splitter.setSizes([280, 440])
             current = self.main_splitter.sizes()
             if len(current) == 3 and current[2] < 300:
                 self.main_splitter.setSizes([260, 680, 340])
@@ -110,37 +102,3 @@ class FilePanelMixin:
         self.workspace_path_label.setToolTip(str(workspace_manager.root))
         if time.monotonic() - getattr(self, "_file_tree_last_refresh", 0.0) >= 10.0:
             self._refresh_file_tree()
-        if not self.current_open_file:
-            return
-        target = workspace_manager.root / self.current_open_file
-        if not target.is_file():
-            self.current_open_file = None
-            self.current_open_file_mtime = 0.0
-            self.file_preview.clear()
-            return
-        mtime = target.stat().st_mtime
-        if mtime != self.current_open_file_mtime:
-            self._load_open_file(self.current_open_file)
-
-    def _open_workspace_file(self, item: QTreeWidgetItem, _column: int) -> None:
-        relative = item.data(0, Qt.ItemDataRole.UserRole)
-        if relative:
-            self._load_open_file(str(relative))
-
-    def _load_open_file(self, relative: str) -> None:
-        try:
-            if self._is_image_path(relative):
-                self.file_preview.setPlainText(
-                    f"图片已发送到对话区展示\n\n{Path(relative).name}"
-                )
-                self.current_open_file = relative
-                self.current_open_file_mtime = (workspace_manager.root / relative).stat().st_mtime
-                self.show_image_file(str(workspace_manager.root / relative))
-                return
-            result = workspace_manager.read(relative)
-            self.file_preview.setPlainText(result["content"])
-            self.current_open_file = relative
-            self.current_open_file_mtime = (workspace_manager.root / relative).stat().st_mtime
-            self.statusBar().showMessage(f"已打开：{relative}")
-        except Exception as exc:
-            self.file_preview.setPlainText(f"无法打开文件：{exc}")

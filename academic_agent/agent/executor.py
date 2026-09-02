@@ -29,7 +29,7 @@ def emit_tool_log(tool: str, message: str, level: str = "info") -> None:
 _ANALYSIS_TOOLS = {
     "load_data", "preprocess_text", "data_statistics", "data_preprocess",
     "feature_processing", "sentiment_analysis", "text_clustering", "extract_keywords",
-    "regression", "classification", "causal_inference",
+    "regression", "classification", "causal_inference", "document_rag",
 }
 
 
@@ -43,8 +43,9 @@ def _analysis_input_log(name: str, params: dict[str, Any]) -> str:
         rows, columns = text_mining_tools.current_data.shape
         parts.append(f"数据={rows} 行 × {columns} 列")
     for key in (
-        "text_column", "n_clusters", "top_n", "target_var", "feature_vars",
-        "model_type", "method", "treatment_var", "outcome_var",
+        "text_column", "algorithm", "n_clusters", "eps", "min_samples", "top_n",
+        "target_var", "feature_vars", "model_type", "method", "test_size",
+        "multiple_folds", "treatment_var", "outcome_var",
     ):
         value = params.get(key)
         if value is not None and value != "" and value != []:
@@ -92,6 +93,10 @@ class ToolExecutor:
         if spec is None:
             return {"success": False, "error": f"未知工具：{name}"}
         try:
+            if scope and scope.allowed_tools is not None and name not in scope.allowed_tools:
+                reason = f"当前任务不允许调用工具：{name}"
+                scope.record("tool_denied", tool=name, label=spec.label, reason=reason)
+                return {"success": False, "tool": name, "error": reason, "denied": True}
             self.policy.authorize(spec, params, scope)
             context = session_store.get(scope.request.session_id) if scope else None
             started_at = time.monotonic()
@@ -104,6 +109,11 @@ class ToolExecutor:
                     )
             result = execute_tool(str(name), context=context, **params)
             if scope:
+                observation_key = scope.current_task_id or "__unscoped__"
+                scope.task_observations.setdefault(observation_key, []).append({
+                    "tool": name,
+                    "result": result,
+                })
                 if name in _ANALYSIS_TOOLS:
                     for message in _analysis_result_logs(result, time.monotonic() - started_at):
                         scope.record(

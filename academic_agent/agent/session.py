@@ -18,6 +18,10 @@ class SessionContext:
     selected_columns: dict[str, str] = field(default_factory=dict)
     completed_tasks: list[dict[str, Any]] = field(default_factory=list)
     pending_questions: list[str] = field(default_factory=list)
+    confirmed_information: list[dict[str, Any]] = field(default_factory=list)
+    plan_document: str = ""
+    plan_trace: list[dict[str, Any]] = field(default_factory=list)
+    task_board: dict[str, Any] = field(default_factory=dict)
 
     @property
     def current_file(self) -> Path | None:

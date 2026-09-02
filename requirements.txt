@@ -31,6 +31,7 @@ lightgbm>=4.0.0
 # 数据处理
 openpyxl>=3.1.0  # Excel支持
 pypdf>=4.0.0     # PDF文本提取
+PyMuPDF>=1.24.0  # PDF页图、坐标叠框与内嵌图片提取（Agentic RAG）
 python-docx>=1.1.0
 python-pptx>=0.6.23
 pyarrow>=15.0.0   # Parquet/Feather
@@ -39,5 +40,5 @@ odfpy>=1.4.1      # ODS
 # Qwen-Agent (如果本地有)
 # qwen_agent (从本地路径安装)
 
-# Qt6 对话客户端
-PyQt6>=6.7.0
+# PySide6 对话客户端
+PySide6>=6.7.0

@@ -16,14 +16,13 @@ class VisualizationService:
         return self.tool.generate_wordcloud(text_column, title)
 
     def cluster_plot(self, cluster_column=None, title="聚类分布"):
-        return self.tool.plot_cluster_distribution(cluster_column, title)
+        return self.tool.plot_distribution(cluster_column, title)
 
     def sentiment_plot(self, sentiment_column=None, title="情感分布"):
-        return self.tool.plot_sentiment_distribution(sentiment_column, title)
+        return self.tool.plot_distribution(sentiment_column, title)
 
     def line_chart(self, x_column, y_column, title=None):
         return self.tool.plot_line_chart(x_column, y_column, title)
 
 
 visualization_service = VisualizationService()
-

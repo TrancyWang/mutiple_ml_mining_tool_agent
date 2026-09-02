@@ -1,4 +1,4 @@
-"""Qt6 Academic Agent 客户端兼容入口。
+"""PySide6 Academic Agent 客户端兼容入口。
 
 界面实现已经拆分到 ``academic_agent.views`` 包中。本文件保留原有启动路径，避免
 ``python qt_client.py``、``start_qt.sh`` 和已有外部调用失效。
@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-# macOS Qt 输入法/窗口图层兼容配置，必须在导入 PyQt6 前设置。
+# macOS Qt 输入法/窗口图层兼容配置，必须在导入 PySide6 前设置。
 if sys.platform == "darwin":
     os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")
 
@@ -31,7 +31,7 @@ try:
 except OSError:
     pass
 
-from PyQt6.QtCore import QLockFile, QSettings, QTimer
+from PySide6.QtCore import QLockFile, QSettings, QTimer
 from academic_agent.infrastructure.model_paths import normalize_model_root
 
 _saved_model_root = str(
@@ -40,8 +40,8 @@ _saved_model_root = str(
 if _saved_model_root and normalize_model_root(_saved_model_root).is_dir():
     os.environ.setdefault("PRETRAINED_MODELS_DIR", _saved_model_root)
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon
+from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon
 from academic_agent.infrastructure.storage_config import apply_persisted_storage_config
 
 # 必须在 Agent/记忆服务导入前应用，且在 .env 加载后会在 main() 中再次应用。

@@ -1,13 +1,13 @@
-"""Academic Agent Qt6 主窗口。"""
+"""Academic Agent PySide6 主窗口。"""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, QTimer, Qt, QSize
-from PyQt6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QSettings, QTimer, Qt, QSize
+from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -52,7 +52,7 @@ class CodexChatWindow(
     ModelMixin,
     QMainWindow,
 ):
-    """只展示 Codex 风格的 Qt6 对话界面，不复刻原 Qt 项目的多 Tab 界面。"""
+    """只展示 Codex 风格的 PySide6 对话界面，不复刻原 Qt 项目的多 Tab 界面。"""
 
     @property
     def auth_session(self):
@@ -193,6 +193,10 @@ class CodexChatWindow(
         self._initialize_agent()
         return True
 
+    def open_login(self) -> None:
+        """打开清晰可见的账户登录入口。"""
+        self.ensure_authenticated(force=True)
+
     def switch_account(self) -> None:
         """主动切换登录用户。"""
         self.ensure_authenticated(force=True)
@@ -235,10 +239,13 @@ class CodexChatWindow(
         if hasattr(self, "auth_status_label"):
             self.auth_status_label.setText(text)
         if hasattr(self, "account_btn"):
-            self.account_btn.setText("···")
+            self.account_btn.setVisible(self.auth_session is not None)
+            self.account_btn.setText("账户")
             self.account_btn.setIcon(self._make_account_icon(initials))
             self.account_btn.setIconSize(QSize(26, 26))
             self._rebuild_account_menu()
+        if hasattr(self, "login_btn"):
+            self.login_btn.setVisible(self.auth_session is None)
         if hasattr(self, "account_identity_label"):
             self.account_identity_label.setText(identity_text)
             self.account_identity_label.setToolTip(text)
@@ -452,7 +459,8 @@ class CodexChatWindow(
         if hasattr(self, "open_file_btn"):
             self.open_file_btn.setVisible(work_mode)
         if hasattr(self, "upload_btn"):
-            self.upload_btn.setVisible(work_mode)
+            # 上传文件属于当前会话，Chat 模式同样可以上传资料。
+            self.upload_btn.setVisible(True)
 
     def _rebuild_account_menu(self) -> None:
         """构建左下角账户菜单，避免设置、主题和退出按钮挤在一起。"""
@@ -556,6 +564,7 @@ class CodexChatWindow(
             "auto": "自动",
             "gemini": "Gemini",
             "qwen": "Qwen 新加坡",
+            "qwen-beijing": "Qwen 北京",
             "ollama": "Ollama 本地",
         }
         try:
@@ -588,7 +597,7 @@ class CodexChatWindow(
         self.statusBar().showMessage("已恢复绿色白色主题")
 
     def customize_green_theme(self) -> None:
-        from PyQt6.QtWidgets import QColorDialog
+        from PySide6.QtWidgets import QColorDialog
 
         color = QColorDialog.getColor(self.accent_color, self, "选择绿色主色")
         if not color.isValid():

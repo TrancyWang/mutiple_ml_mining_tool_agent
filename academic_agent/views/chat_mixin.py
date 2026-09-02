@@ -10,9 +10,9 @@ import os
 import re
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QTimer, Qt, QUrl
-from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtCore import QEvent, QTimer, Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox, QPushButton
 
 from academic_agent.infrastructure.workspace_manager import workspace_manager
 from academic_agent.infrastructure.runtime_paths import output_root
@@ -41,7 +41,8 @@ class ChatMixin:
         return bool(self.configure_text_mining_model())
 
     def eventFilter(self, obj, event):
-        if obj is self.composer and event.type() == QEvent.Type.KeyPress:
+        composer = getattr(self, "composer", None)
+        if composer is not None and obj is composer and event.type() == QEvent.Type.KeyPress:
             if event.key() == Qt.Key.Key_Return and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self.send_message()
                 return True
@@ -60,19 +61,15 @@ class ChatMixin:
         self.statusBar().showMessage("已新建对话")
 
     def upload_file(self) -> None:
-        if not self.ensure_authenticated():
-            return
         from academic_agent.infrastructure.data_profiler import profile_file
         from academic_agent.agent.session import session_store
         from academic_agent.tools.text_mining_tools import text_mining_tools
 
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择数据或文档文件",
-            "",
-            "Supported Files (*.csv *.tsv *.xlsx *.xls *.xlsm *.ods *.txt *.log *.md *.json *.jsonl *.parquet *.feather *.html *.htm *.pdf *.docx *.pptx *.png *.jpg *.jpeg *.webp *.bmp *.gif *.mp3 *.wav *.mp4 *.mov *.avi);;All Files (*)",
-        )
+        path = self._choose_upload_file()
         if not path:
+            return
+        # 先完成文件选择，再在确实要导入时登录，避免选择器被登录流程打断。
+        if not self.ensure_authenticated():
             return
         try:
             result = text_mining_tools.load_data(file_path=path, source_scope="upload")
@@ -104,6 +101,29 @@ class ChatMixin:
             self.statusBar().showMessage("文件已加载到当前 Agent 会话")
         except Exception as exc:
             QMessageBox.critical(self, "上传失败", str(exc))
+
+    def _choose_upload_file(self) -> str | None:
+        """打开稳定的单文件选择器，避免原生选择器出现文件无法确认的问题。"""
+        dialog = QFileDialog(self, "上传文件到当前对话")
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setViewMode(QFileDialog.ViewMode.Detail)
+        supported_filter = (
+            "支持的文件 (*.csv *.tsv *.xlsx *.xls *.xlsm *.ods *.txt *.log *.md *.rst "
+            "*.json *.jsonl *.ndjson *.parquet *.feather *.html *.htm *.pdf *.docx *.pptx "
+            "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.mp3 *.wav *.mp4 *.mov *.avi)"
+        )
+        dialog.setNameFilters([
+            supported_filter,
+            "所有文件 (*)",
+        ])
+        dialog.selectNameFilter(supported_filter)
+        dialog.resize(900, 600)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        selected = dialog.selectedFiles()
+        return selected[0] if selected else None
 
     def show_image_file(self, image_path: str | None = None) -> None:
         """选择工作区图片，并复用对话区现有图片渲染逻辑展示。"""
@@ -149,6 +169,8 @@ class ChatMixin:
         self.composer.clear()
         self.messages.append({"role": "user", "content": text})
         self.current_assistant = ""
+        # “帮我批准”只作用于当前这次任务，避免下一轮请求意外沿用全自动模式。
+        self._agent_auto_mode = False
         from academic_agent.agent.session import session_store
 
         artifacts_before = list(session_store.get(self.session_id).artifacts)
@@ -218,6 +240,104 @@ class ChatMixin:
                     "status": "pending",
                     "suggested_tools": list(plan_step.get("suggested_tools") or []),
                 })
+        elif event_type == "plan_review_fallback":
+            reason = str(event.get("reason") or "规划模型未返回可识别结构")
+            logs.append({
+                "message": f"Plan Review 已采用本地安全计划继续：{reason}",
+                "level": "warning",
+            })
+            self.statusBar().showMessage("Plan Review 格式未稳定返回，已采用本地安全计划继续")
+        elif event_type == "plan_review_required":
+            plan_payload = event.get("plan") or {}
+            review_key = "replan_review" if plan_payload.get("is_replan") else "plan_review"
+            matched_review = next((step for step in steps if step.get("key") == review_key), None)
+            if matched_review is None:
+                steps.append({
+                    "key": review_key,
+                    "label": "等待确认新的 Plan" if review_key == "replan_review" else "等待确认自然语言 Plan",
+                    "status": "running",
+                })
+            else:
+                matched_review["status"] = "running"
+            self._show_plan_review(event.get("plan") or {}, event.get("board") or {})
+        elif event_type == "clarification_required":
+            info = event.get("information") or {}
+            key = f"clarification_{info.get('info_id', len(steps))}"
+            steps.append({
+                "key": key,
+                "label": f"补充信息：{info.get('topic', '规划信息')}",
+                "status": "running",
+            })
+            self._show_clarification(info, key)
+        elif event_type == "task_board_created":
+            for task in (event.get("board") or {}).get("tasks", []):
+                task_id = str(task.get("id", "task"))
+                if not any(step.get("key") == f"task_{task_id}" for step in steps):
+                    steps.append({
+                        "key": f"task_{task_id}",
+                        "label": str(task.get("title", "执行任务")),
+                        "status": "pending",
+                    })
+        elif event_type == "task_started":
+            task = event.get("task") or {}
+            task_id = str(task.get("id", "task"))
+            matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
+            if matched is None:
+                matched = {"key": f"task_{task_id}", "label": str(task.get("title", "执行任务"))}
+                steps.append(matched)
+            matched["status"] = "running"
+        elif event_type == "task_checked":
+            task_id = str(event.get("task_id", "task"))
+            matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
+            if matched is not None:
+                matched["status"] = "running" if event.get("passed") else "failed"
+            feedback = str(event.get("feedback", "")).strip()
+            if feedback and not event.get("passed"):
+                logs.append({"message": f"任务检查反馈：{feedback}", "level": "error"})
+        elif event_type == "task_completed":
+            task = event.get("task") or {}
+            task_id = str(task.get("id", "task"))
+            matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
+            if matched is not None:
+                matched["status"] = "completed"
+        elif event_type == "task_retry":
+            task = event.get("task") or {}
+            task_id = str(task.get("id", "task"))
+            matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
+            if matched is not None:
+                matched["status"] = "pending"
+            logs.append({
+                "message": f"任务将重试：{event.get('feedback', '')}",
+                "level": "error",
+            })
+        elif event_type == "task_blocked":
+            task = event.get("task") or {}
+            task_id = str(task.get("id", "task"))
+            matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
+            if matched is not None:
+                matched["status"] = "failed"
+        elif event_type == "task_board_updated":
+            for task in (event.get("board") or {}).get("tasks", []):
+                task_id = str(task.get("id", "task"))
+                if not any(step.get("key") == f"task_{task_id}" for step in steps):
+                    steps.append({
+                        "key": f"task_{task_id}",
+                        "label": str(task.get("title", "新增任务")),
+                        "status": "pending",
+                    })
+        elif event_type == "replan_requested":
+            logs.append({
+                "message": f"Reflection 建议重新规划：{event.get('reason', '')}",
+                "level": "error",
+            })
+        elif event_type == "configuration_required":
+            if not any(step.get("key") == "algorithm_configuration" for step in steps):
+                steps.append({
+                    "key": "algorithm_configuration",
+                    "label": "等待确认算法与参数",
+                    "status": "running",
+                })
+            self._show_algorithm_configuration(event.get("configuration") or {})
         elif event_type == "tool_started":
             tool = str(event.get("tool", "tool"))
             label = str(event.get("label") or "分析工具")
@@ -247,9 +367,6 @@ class ChatMixin:
                     "level": str(event.get("level", "info")),
                 })
         elif event_type == "response_started":
-            for step in steps:
-                if step.get("status") in {"pending", "running"}:
-                    step["status"] = "completed"
             if not any(step.get("key") == "response" for step in steps):
                 steps.append({
                     "key": "response",
@@ -257,10 +374,322 @@ class ChatMixin:
                     "status": "running",
                 })
         elif event_type == "completed":
-            for step in steps:
-                if step.get("status") in {"pending", "running"}:
-                    step["status"] = "completed"
+            response = next((step for step in steps if step.get("key") == "response"), None)
+            if response is not None:
+                response["status"] = "completed"
         self._schedule_stream_render()
+
+    def _show_plan_review(self, plan: dict, board: dict) -> None:
+        """在对话下方显示 Plan 卡片，避免模态窗口打断当前对话。"""
+        self._pending_plan_review = {"plan": plan, "board": board}
+        self._pending_plan_review_key = "replan_review" if plan.get("is_replan") else "plan_review"
+        self._pending_clarification = None
+        if plan.get("is_replan"):
+            self.agent_action_title.setText("任务遇到问题，需要重新规划")
+            reason = str(plan.get("replan_reason") or "当前任务未通过检查")
+            self.agent_action_context.setText(
+                f"{reason}。Agent 已根据已有结果生成新的执行计划，请选择如何继续。"
+            )
+        else:
+            self.agent_action_title.setText("先确认一下执行方向")
+            self.agent_action_context.setText(
+                "Agent 已经把你的需求整理成一份执行计划。这里展示的是行动安排，不是最终结果；确认后才会开始调用工具。"
+            )
+        preview = [str(plan.get("plan_document") or "未生成可读的 Plan 文书").strip()]
+        tasks = board.get("tasks") or []
+        if tasks:
+            preview.append("\n执行步骤预览：")
+            for index, task in enumerate(tasks, 1):
+                title = str(task.get("title") or task.get("description") or "执行任务")
+                goal = str(task.get("task_goal") or task.get("description") or "").strip()
+                done_when = str(task.get("done_when") or "完成后由检查模块确认").strip()
+                preview.append(f"{index}. {title}")
+                if goal and goal != title:
+                    preview.append(f"   目标：{goal}")
+                preview.append(f"   完成标准：{done_when}")
+        self.agent_action_details.setPlainText("\n".join(item for item in preview if item))
+        self.agent_action_hint.setText(
+            "请使用输入框下方、模型按钮旁边的“请求批准”或“帮我批准”继续；"
+            "如果方向不对，请点击卡片中的“取消这次任务”。"
+        )
+        self.agent_action_details.setVisible(True)
+        self.agent_action_options.setVisible(False)
+        self.agent_action_confirm_btn.setVisible(True)
+        self.agent_action_auto_btn.setVisible(True)
+        self.agent_action_submit_btn.setVisible(False)
+        self.agent_action_cancel_btn.setVisible(True)
+        self.agent_action_panel.setVisible(True)
+        self.agent_action_panel.raise_()
+        self.statusBar().showMessage("请在对话下方确认 Agent 的执行计划")
+
+    def _show_clarification(self, information: dict, key: str) -> None:
+        """在对话下方解释信息缺口，让用户通过选项回答。"""
+        self._pending_clarification = {"information": information, "key": key}
+        self._pending_plan_review = None
+        topic = str(information.get("topic") or "规划信息")
+        question = str(information.get("question") or "请补充必要信息")
+        why_needed = str(information.get("why_needed") or "")
+        expected = str(
+            information.get("expected_format")
+            or information.get("answer_hint")
+            or ""
+        ).strip()
+        example = str(information.get("example") or "").strip()
+        self.agent_action_title.setText(f"需要你补充：{topic}")
+        self.agent_action_context.setText(question)
+        detail_lines = []
+        if why_needed:
+            detail_lines.append(f"为什么需要：{why_needed}")
+        if expected:
+            detail_lines.append(f"建议回答格式：{expected}")
+        if example:
+            detail_lines.append(f"示例：{example}")
+        self.agent_action_details.setPlainText("\n".join(detail_lines))
+        self.agent_action_hint.setText("请选择最符合你实际情况的一项；如果都不完全匹配，选择最接近的一项即可。")
+        self.agent_action_details.setVisible(bool(detail_lines))
+        self._populate_action_options(information)
+        self.agent_action_confirm_btn.setVisible(False)
+        self.agent_action_auto_btn.setVisible(False)
+        self.agent_action_submit_btn.setVisible(True)
+        self.agent_action_submit_btn.setEnabled(False)
+        self.agent_action_cancel_btn.setVisible(True)
+        self.agent_action_panel.setVisible(True)
+        self.agent_action_panel.raise_()
+        self.statusBar().showMessage("请在对话下方补充这项信息")
+        if getattr(self, "_agent_auto_mode", False):
+            self._answer_clarification_automatically(information, key)
+
+    def _populate_action_options(self, information: dict) -> None:
+        """把规划模型提供的选项渲染成可点击按钮，不要求用户自由输入。"""
+        while self.agent_action_options_layout.count():
+            item = self.agent_action_options_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        raw_options = information.get("options") or []
+        options = []
+        for item in raw_options[:6]:
+            if isinstance(item, dict):
+                label = str(item.get("label") or item.get("value") or "").strip()
+                value = str(item.get("value") or label).strip()
+                description = str(item.get("description") or "").strip()
+            else:
+                label = str(item).strip()
+                value = label
+                description = ""
+            if label and value:
+                options.append({"label": label, "value": value, "description": description})
+
+        if not options:
+            default = str(information.get("default_assumption") or "").strip()
+            value = default or "未特别指定，请采用低风险、可逆的默认方案。"
+            options.append({
+                "label": "按建议的默认方案继续",
+                "value": value,
+                "description": default or "不额外指定特殊要求。",
+            })
+
+        self._pending_option_value = None
+        self._pending_option_buttons = []
+        for option in options:
+            label = option["label"]
+            description = option["description"]
+            button = QPushButton(
+                label if not description else f"{label}\n{description}",
+                objectName="agent_action_option",
+            )
+            button.setCheckable(True)
+            button.setToolTip(description or label)
+            button.clicked.connect(
+                lambda _checked=False, value=option["value"], selected=button:
+                self._select_action_option(value, selected)
+            )
+            self._pending_option_buttons.append(button)
+            self.agent_action_options_layout.addWidget(button)
+        self.agent_action_options.setVisible(True)
+
+    def _select_action_option(self, value: str, selected) -> None:
+        self._pending_option_value = str(value)
+        for button in getattr(self, "_pending_option_buttons", []):
+            button.setChecked(button is selected)
+        self.agent_action_submit_btn.setEnabled(True)
+        self.statusBar().showMessage("已选择一项，点击“提交选择”继续")
+
+    def _hide_agent_action_panel(self) -> None:
+        self._pending_plan_review = None
+        self._pending_plan_review_key = "plan_review"
+        self._pending_clarification = None
+        self.agent_action_panel.setVisible(False)
+        # 审批按钮位于输入区，不随详情卡片自动隐藏，因此这里要显式收起。
+        if hasattr(self, "agent_action_confirm_btn"):
+            self.agent_action_confirm_btn.setVisible(False)
+        if hasattr(self, "agent_action_auto_btn"):
+            self.agent_action_auto_btn.setVisible(False)
+
+    def _finish_plan_approval(self, auto_mode: bool) -> None:
+        if not getattr(self, "_pending_plan_review", None):
+            return
+        review_key = getattr(self, "_pending_plan_review_key", "plan_review")
+        for step in self.messages[-1].get("_execution_steps", []):
+            if step.get("key") == review_key:
+                step["status"] = "completed"
+        self._hide_agent_action_panel()
+        self.statusBar().showMessage(
+            "已选择帮我批准，Agent 将全自动执行"
+            if auto_mode else "已请求批准，正在生成任务清单"
+        )
+        if self.worker is not None:
+            self.worker.set_plan_decision({"approved": True, "auto_mode": auto_mode})
+        self._render_messages()
+
+    def _request_plan_approval(self) -> None:
+        self._agent_auto_mode = False
+        self._finish_plan_approval(auto_mode=False)
+
+    def _auto_approve_plan(self) -> None:
+        self._agent_auto_mode = True
+        self._finish_plan_approval(auto_mode=True)
+
+    def _answer_clarification_automatically(self, information: dict, key: str) -> None:
+        """全自动模式下选择规划模型提供的第一项建议。"""
+        options = information.get("options") or []
+        answer = ""
+        if options:
+            first = options[0]
+            answer = str(first.get("value") if isinstance(first, dict) else first).strip()
+        if not answer:
+            answer = str(information.get("default_assumption") or "").strip()
+        if not answer:
+            answer = "未特别指定，请采用低风险、可逆的默认方案。"
+        for step in self.messages[-1].get("_execution_steps", []):
+            if step.get("key") == key:
+                step["status"] = "completed"
+        self._hide_agent_action_panel()
+        self.messages[-1].setdefault("_execution_logs", []).append({
+            "message": f"全自动模式已选择：{answer}",
+            "level": "info",
+        })
+        if self.worker is not None:
+            self.worker.set_clarification_answer(answer)
+        self.statusBar().showMessage("全自动模式：已自动选择规划选项，正在继续")
+        self._render_messages()
+
+    def _cancel_pending_action(self) -> None:
+        if getattr(self, "_pending_plan_review", None):
+            review_key = getattr(self, "_pending_plan_review_key", "plan_review")
+            for step in self.messages[-1].get("_execution_steps", []):
+                if step.get("key") == review_key:
+                    step["status"] = "failed"
+            self._hide_agent_action_panel()
+            self.statusBar().showMessage("已取消 Plan 执行")
+            if self.worker is not None:
+                self.worker.set_plan_decision({"cancelled": True})
+        elif getattr(self, "_pending_clarification", None):
+            key = self._pending_clarification.get("key")
+            for step in self.messages[-1].get("_execution_steps", []):
+                if step.get("key") == key:
+                    step["status"] = "failed"
+            self._hide_agent_action_panel()
+            self.statusBar().showMessage("未补充必要信息，已取消本次任务")
+            if self.worker is not None:
+                self.worker.set_clarification_answer(None)
+        self._render_messages()
+
+    def _submit_pending_clarification(self) -> None:
+        pending = getattr(self, "_pending_clarification", None)
+        if not pending:
+            return
+        answer = str(getattr(self, "_pending_option_value", "") or "").strip()
+        if not answer:
+            self.statusBar().showMessage("请先点选一项，再提交")
+            return
+        key = pending.get("key")
+        for step in self.messages[-1].get("_execution_steps", []):
+            if step.get("key") == key:
+                step["status"] = "completed"
+        self._hide_agent_action_panel()
+        self.statusBar().showMessage("信息已提交，Agent 正在继续规划")
+        if self.worker is not None:
+            self.worker.set_clarification_answer(answer)
+        self._render_messages()
+
+    def _show_algorithm_configuration(self, configuration: dict) -> None:
+        """在后台 Agent 等待时打开算法确认窗口，不阻塞 Qt 界面。"""
+        if getattr(self, "_agent_auto_mode", False):
+            selection = self._default_algorithm_configuration(configuration)
+            self.statusBar().showMessage("全自动模式：已采用推荐算法和默认参数")
+            for step in self.messages[-1].get("_execution_steps", []):
+                if step.get("key") == "algorithm_configuration":
+                    step["status"] = "completed"
+            if self.worker is not None:
+                self.worker.set_plan_configuration(selection)
+            self._render_messages()
+            return
+
+        from academic_agent.views.dialogs import AlgorithmSelectionDialog
+
+        dialog = AlgorithmSelectionDialog(configuration, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            selection = dialog.selected_configuration
+            self.statusBar().showMessage(
+                f"已确认：{selection.get('algorithm_label', '推荐算法')}，正在继续执行"
+            )
+            for step in self.messages[-1].get("_execution_steps", []):
+                if step.get("key") == "algorithm_configuration":
+                    step["status"] = "completed"
+            if self.worker is not None:
+                self.worker.set_plan_configuration(selection)
+        else:
+            for step in self.messages[-1].get("_execution_steps", []):
+                if step.get("key") == "algorithm_configuration":
+                    step["status"] = "failed"
+            self.statusBar().showMessage("已取消算法配置")
+            if self.worker is not None:
+                self.worker.set_plan_configuration({"cancelled": True})
+        self._render_messages()
+
+    @staticmethod
+    def _default_algorithm_configuration(configuration: dict) -> dict:
+        """构造和算法确认对话框中“全自动化”选项一致的默认配置。"""
+        from academic_agent.agent.planning.configuration import machine_learning_configuration
+
+        active = dict(configuration or {})
+        task_options = active.get("task_options") or []
+        task_type = str(task_options[0].get("key")) if task_options else str(active.get("kind", ""))
+        if task_options and task_type:
+            active = machine_learning_configuration(task_type)
+        options = active.get("options") or []
+        default_key = active.get("default_algorithm")
+        option = next(
+            (item for item in options if item.get("key") == default_key),
+            options[0] if options else {},
+        )
+        parameters = {
+            str(spec["name"]): spec.get("default")
+            for spec in option.get("parameters", [])
+            if spec.get("name")
+        }
+        kind = str(active.get("kind", task_type))
+        tool_arguments = dict(parameters)
+        if kind == "text_clustering":
+            tool_arguments["algorithm"] = option.get("key")
+        elif kind == "sentiment_analysis":
+            tool_arguments["mode"] = option.get("key")
+        elif kind in {"classification", "regression"}:
+            tool_arguments["model_type"] = option.get("key")
+        elif kind == "causal_inference":
+            tool_arguments["method"] = option.get("key")
+        return {
+            "kind": kind,
+            "task_type": task_type or kind,
+            "algorithm": option.get("key"),
+            "algorithm_label": option.get("label"),
+            "mode": "auto",
+            "parameters": parameters,
+            "tool_arguments": tool_arguments,
+        }
+
 
     def on_chunk(self, content: str) -> None:
         if content == self.current_assistant:
@@ -280,7 +709,7 @@ class ChatMixin:
 
     def _schedule_stream_render(self) -> None:
         """将高频 token 更新合并为约 25 FPS 的界面刷新。"""
-        from PyQt6.QtCore import QTimer
+        from PySide6.QtCore import QTimer
 
         timer = getattr(self, "_stream_render_timer", None)
         if timer is None:

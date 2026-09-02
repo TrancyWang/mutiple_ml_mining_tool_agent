@@ -82,11 +82,22 @@ class TextMiningToolWrapper(BaseTool):
             'algorithm': {
                 'type': 'string',
                 'description': '算法类型',
+                'enum': ['kmeans', 'agglomerative', 'dbscan'],
                 'default': 'kmeans'
             },
             'n_clusters': {
                 'type': 'integer',
                 'description': '聚类数量',
+                'default': 5
+            },
+            'eps': {
+                'type': 'number',
+                'description': 'DBSCAN 邻域半径',
+                'default': 0.5
+            },
+            'min_samples': {
+                'type': 'integer',
+                'description': 'DBSCAN 最小样本数',
                 'default': 5
             },
             'top_n': {
@@ -181,11 +192,21 @@ class MLToolWrapper(BaseTool):
             },
             'model_type': {
                 'type': 'string',
-                'description': '回归模型；分类仅支持当前项目的 svm'
+                'description': '回归模型或分类模型；分类当前支持 svm'
             },
             'method': {
                 'type': 'string',
                 'description': '因果推断方法：ols、logistic、linear_dml、psm、causal_forest'
+            },
+            'test_size': {
+                'type': 'number',
+                'description': '测试集比例，默认 0.2',
+                'default': 0.2
+            },
+            'multiple_folds': {
+                'type': 'integer',
+                'description': '交叉训练次数，默认 5',
+                'default': 5
             }
         },
         'required': ['action']
@@ -206,6 +227,8 @@ class MLToolWrapper(BaseTool):
                 params_dict.setdefault('model_type', 'svm')
             elif action == 'regression':
                 params_dict.setdefault('model_type', 'linear')
+                params_dict.setdefault('test_size', 0.2)
+                params_dict.setdefault('multiple_folds', 5)
             elif action == 'causal_inference':
                 params_dict.setdefault('method', 'ols')
             result = (
@@ -278,6 +301,33 @@ class VizToolWrapper(BaseTool):
             return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
+class DocumentRAGToolWrapper(BaseTool):
+    """Qwen-Agent wrapper for the integrated structure-aware document RAG."""
+
+    name = "document_rag"
+    description = (
+        "对用户上传或当前项目工作区内的 PDF、Markdown、TXT、DOCX、CSV、JSON 文档进行结构化解析、"
+        "混合检索和引用溯源。需要查询文档内容时调用。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "要回答的文档问题"},
+            "file_paths": {"type": "array", "items": {"type": "string"}, "description": "可选，限定文档路径"},
+            "top_k": {"type": "integer", "description": "返回证据片段数，默认 6", "default": 6},
+        },
+        "required": ["query"],
+    }
+
+    def call(self, params: str, **kwargs) -> str:
+        try:
+            payload = json.loads(params) if isinstance(params, str) else dict(params)
+            result = tool_executor.execute("document_rag", **payload)
+            return json.dumps(result, ensure_ascii=False, default=str)
+        except Exception as exc:
+            return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+
+
 class RegistryToolWrapper(BaseTool):
     """统一工具入口：自然语言 Agent 和 UI Tools 使用同一注册表。"""
 
@@ -316,6 +366,7 @@ class AgentService:
         """初始化 Agent 服务"""
         self.agent = None
         self.chat_agent = None
+        self.planning_agent = None
         self.llm_config: Dict[str, Any] = {}
         # Qt 客户端不能直接把终端 traceback 展示给用户，因此保留最近一次
         # 初始化失败的可读原因，供桌面端提示和日志使用。
@@ -323,6 +374,7 @@ class AgentService:
         self.runtime = AgentRuntime()
         self.tools = [
             RegistryToolWrapper(),
+            DocumentRAGToolWrapper(),
             TextMiningToolWrapper(),
             MLToolWrapper(),
             VizToolWrapper()
@@ -350,6 +402,33 @@ class AgentService:
             name="AcademicChatAssistant",
         )
         return self.chat_agent
+
+    def _get_planning_agent(self) -> Any:
+        """返回不注册工具的规划/检查 Agent，避免 Plan 阶段产生副作用。"""
+        if self.planning_agent is not None:
+            return self.planning_agent
+        if not HAS_QWEN_AGENT or not self.llm_config:
+            return None
+        # 规划、检查和 JSON 契约不需要创造性，使用独立的低温配置，
+        # 避免复用主 Agent 的高温度导致结构漂移。
+        planning_llm = dict(self.llm_config)
+        planning_generate_cfg = dict(self.llm_config.get("generate_cfg") or {})
+        planning_generate_cfg.update({
+            "temperature": 0.0,
+            "top_p": 0.1,
+            "max_tokens": 2048,
+        })
+        planning_llm["generate_cfg"] = planning_generate_cfg
+        self.planning_agent = Assistant(
+            llm=planning_llm,
+            function_list=[],
+            system_message=(
+                "你是 Academic Agent 的规划与质量检查模块。只处理语义规划、任务拆分、"
+                "信息缺口判断和结果检查，不调用工具，不执行文件或数据操作。"
+            ),
+            name="AcademicPlanningAssistant",
+        )
+        return self.planning_agent
     
     def init_agent(self,
                    model_name: Optional[str] = None,
@@ -377,7 +456,7 @@ class AgentService:
             return None
 
         try:
-            # 默认模式仍遵循 Gemini → Qwen 新加坡 → Ollama；显式选择的
+            # 默认模式仍遵循 Gemini → Qwen（新加坡/北京）→ Ollama；显式选择的
             # provider 不静默改动，避免用户以为正在使用某个云模型。
             if llm_config is None:
                 print(f"🔧 正在初始化 Agent，请求模型: {model_name}")
@@ -399,11 +478,14 @@ class AgentService:
 2. **文本挖掘**：情感分析、文本聚类、关键词提取
 3. **机器学习**：因果推断、回归分析、分类建模
 4. **可视化**：生成词云、分布图、模型评估图表
-5. **项目文件生成**：可以在当前项目工作区生成 Markdown、TXT、JSON、CSV、Excel、Word、PDF 和 PPT 文件；禁止访问工作区之外的路径、密钥和隐藏配置
+5. **文档 RAG**：对用户上传或当前工作区文档进行结构化解析、混合检索，并根据页码、标题和块类型返回引用证据
+6. **项目文件生成**：可以在当前项目工作区生成 Markdown、TXT、JSON、CSV、Excel、Word、PDF 和 PPT 文件；禁止访问工作区之外的路径、密钥和隐藏配置
 
 【工作流程】
-- 用户会告诉你他们想要做什么
-- 你需要选择合适的工具来完成用户的请求
+- Work 模式会由 Runtime 先完成 Routing、Plan 和任务板转换
+- 执行任务时只处理提示中的 current_task，不要提前完成其他任务
+- 每次工具操作后依据观察结果继续当前任务；不要自行修改任务状态
+- 如果当前任务缺少关键信息，明确指出缺口，不要用虚构内容填补
 - 每次操作后，向用户清晰地解释结果
 - 如果用户没有提供必要的参数，请询问用户
 
@@ -420,6 +502,7 @@ class AgentService:
 - 对话回复中不要复制完整文件原文、代码、检索命中内容或差异内容，只汇报文件操作状态、数量、路径和结果摘要；用户需要查看原文时引导其使用右侧“打开文件”面板
 
 你可以使用的工具：
+- document_rag: 文档结构化解析、混合检索和引用溯源
 - text_mining_tool: 文本挖掘相关操作
 - machine_learning_tool: 机器学习建模
 - visualization_tool: 图表生成
@@ -434,6 +517,7 @@ class AgentService:
                 name='TextMiningAssistant'
             )
             self.chat_agent = None
+            self.planning_agent = None
             
             print(f"✅ Agent 初始化成功，使用模型: {llm_config['model']}")
             print(f"   服务器: {llm_config.get('model_server', 'N/A')}")
@@ -487,9 +571,14 @@ class AgentService:
             chat_only=chat_only,
         )
         try:
+            planning_agent = self._get_planning_agent()
             return self.runtime.run(
                 request,
                 lambda enhanced: runtime_agent.run(messages=enhanced, **kwargs),
+                semantic_runner=(
+                    (lambda enhanced: planning_agent.run(messages=enhanced, **kwargs))
+                    if planning_agent is not None else None
+                ),
             )
         except Exception as exc:
             return {"error": f"对话失败: {exc}"}
@@ -499,6 +588,9 @@ class AgentService:
                     workspace_path: Optional[str] = None,
                     chat_only: bool = False,
                     progress_callback=None,
+                    plan_confirmation_callback=None,
+                    plan_review_callback=None,
+                    clarification_callback=None,
                     _allow_fallback: bool = True, **kwargs):
         """流式对话：模型产生增量内容后立即向 UI 返回。"""
         if self.agent is None:
@@ -519,10 +611,18 @@ class AgentService:
         )
         has_output = False
         try:
+            planning_agent = self._get_planning_agent()
             for response in self.runtime.stream(
                 request,
                 lambda enhanced: runtime_agent.run(messages=enhanced, **kwargs),
                 event_callback=progress_callback,
+                plan_confirmation_callback=plan_confirmation_callback,
+                plan_review_callback=plan_review_callback,
+                clarification_callback=clarification_callback,
+                semantic_runner=(
+                    (lambda enhanced: planning_agent.run(messages=enhanced, **kwargs))
+                    if planning_agent is not None else None
+                ),
             ):
                 if isinstance(response, list) and response:
                     has_output = has_output or bool(response[-1].get("content"))
@@ -539,6 +639,9 @@ class AgentService:
                         workspace_path=workspace_path,
                         chat_only=chat_only,
                         progress_callback=progress_callback,
+                        plan_confirmation_callback=plan_confirmation_callback,
+                        plan_review_callback=plan_review_callback,
+                        clarification_callback=clarification_callback,
                         _allow_fallback=False,
                         **kwargs,
                     )

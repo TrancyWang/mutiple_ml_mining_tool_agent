@@ -20,6 +20,13 @@ class SkillCatalog:
     def __init__(self) -> None:
         definitions = (
             AgentSkill(
+                "document_rag",
+                AgentRoute.DOCUMENT,
+                "对用户上传或当前工作区中的文档进行结构化解析和带引用检索",
+                ("document_rag",),
+                ("确定文档范围", "解析并检索相关证据", "根据证据回答并保留引用"),
+            ),
+            AgentSkill(
                 "project_workspace",
                 AgentRoute.PROJECT,
                 "在当前项目边界内检索、读取与生成文件",

@@ -1,6 +1,6 @@
 """Academic Agent Qt 客户端的统一样式。"""
 
-from PyQt6.QtGui import QColor
+from PySide6.QtGui import QColor
 
 
 BASE_STYLESHEET = """
@@ -25,6 +25,22 @@ QTextBrowser#chat { background:#ffffff; border:0; padding:30px 9%; font-size:15p
 QWidget#composer_shell { background:#ffffff; }
 QFrame#composer_box { background:#ffffff; border:1px solid #bcd9c4; border-radius:18px; }
 QFrame#composer_box:focus-within { border:2px solid #43a047; }
+QFrame#agent_action_panel { background:#f7fbf8; border:1px solid #bcd9c4; border-radius:15px; margin:0 52px; }
+QLabel#agent_action_title { color:#176b38; font-size:15px; font-weight:700; }
+QLabel#agent_action_context { color:#2e6f43; font-size:14px; }
+QLabel#agent_action_hint { color:#668270; font-size:12px; }
+QPlainTextEdit#agent_action_details, QPlainTextEdit#agent_action_input { background:#ffffff; color:#2e6f43; border:1px solid #d7e8dc; border-radius:10px; padding:7px 9px; }
+QPlainTextEdit#agent_action_input:focus { border:2px solid #43a047; }
+QPushButton#agent_action_confirm { background:#4caf50; color:#ffffff; border-color:#388e3c; font-weight:600; }
+QPushButton#agent_action_confirm:hover { background:#388e3c; }
+QPushButton#agent_action_auto { background:#2e7d52; color:#ffffff; border-color:#236440; font-weight:600; }
+QPushButton#agent_action_auto:hover { background:#236440; }
+QPushButton#agent_action_submit { background:#4caf50; color:#ffffff; border-color:#388e3c; font-weight:600; }
+QPushButton#agent_action_submit:hover { background:#388e3c; }
+QPushButton#agent_action_cancel { color:#668270; }
+QPushButton#agent_action_option { background:#ffffff; color:#2e6f43; border:1px solid #cfe3d4; border-radius:10px; padding:7px 10px; text-align:left; }
+QPushButton#agent_action_option:hover { background:#f1f8f3; border-color:#79b88a; }
+QPushButton#agent_action_option:checked { background:#e8f5e9; color:#176b38; border:2px solid #43a047; }
 QPlainTextEdit#composer { background:transparent; border:0; padding:12px 14px 4px; font-size:14px; }
 QPushButton, QToolButton { border:1px solid #bcd9c4; border-radius:11px; padding:8px 14px; background:#ffffff; color:#2e6f43; min-height:22px; }
 QPushButton:hover { background:#f1f8f3; border-color:#79b88a; }
@@ -33,6 +49,10 @@ QPushButton#send:hover { background:#388e3c; }
 QPushButton#icon_button { min-width:34px; max-width:34px; min-height:34px; max-height:34px; padding:0; border-radius:17px; font-size:18px; }
 QPushButton#new_chat { background:#ffffff; border:1px solid #bcd9c4; border-radius:12px; padding:9px 13px; text-align:left; }
 QPushButton#new_chat:hover { background:#eff8f1; border-color:#79b88a; }
+QPushButton#upload_button { background:#f1f8f3; color:#176b38; border:1px solid #bcd9c4; border-radius:12px; padding:8px 14px; font-weight:600; }
+QPushButton#upload_button:hover { background:#e8f5e9; border-color:#79b88a; }
+QPushButton#login_button { background:#43a047; color:#ffffff; border:1px solid #388e3c; border-radius:14px; padding:8px 14px; font-weight:600; }
+QPushButton#login_button:hover { background:#388e3c; }
 QComboBox#feature_select { background:#ffffff; color:#2e6f43; border:1px solid #bcd9c4; border-radius:12px; padding:7px 12px; min-height:27px; }
 QComboBox#feature_select:hover { border-color:#79b88a; background:#f8fcf9; }
 QComboBox#feature_select::drop-down { border:0; width:24px; }
@@ -53,14 +73,13 @@ QTreeWidget#file_tree { background:#ffffff; border:1px solid #d7e8dc; border-rad
 QTreeWidget#file_tree::item { padding:6px 5px; border-radius:8px; }
 QTreeWidget#file_tree::item:selected { background:#e3f2fd; color:#1769aa; }
 QLineEdit#file_filter { background:#ffffff; border:1px solid #bcd9c4; border-radius:12px; padding:9px 12px; }
-QPlainTextEdit#file_preview { background:#ffffff; border:1px solid #d7e8dc; border-radius:14px; padding:8px; font-family:Menlo,Monaco,monospace; font-size:12px; }
 QScrollArea#common_scroll { background:transparent; border:0; }
 QFrame#account_bar { background:#ffffff; border:0; }
 QLabel#account_identity { color:#245c36; font-size:14px; font-weight:600; padding:7px 5px; }
 QPushButton#theme_button { background:#ffffff; color:#176b38; border:1px solid #bcd9c4; border-radius:11px; padding:7px 11px; }
 QPushButton#model_button { background:#ffffff; color:#176b38; border:1px solid #bcd9c4; border-radius:11px; padding:7px 11px; }
 QPushButton#account_button { background:#ffffff; color:#176b38; border:1px solid #bcd9c4; border-radius:11px; padding:7px 11px; }
-QToolButton#account_button { background:#ffffff; color:#245c36; border:1px solid #d7e8dc; border-radius:19px; padding:2px; min-width:38px; max-width:42px; min-height:38px; max-height:42px; font-weight:700; }
+QToolButton#account_button { background:#ffffff; color:#245c36; border:1px solid #d7e8dc; border-radius:19px; padding:3px 9px; min-width:74px; max-width:110px; min-height:38px; max-height:42px; font-weight:700; }
 QToolButton#account_button:hover { background:#eef7f0; border:0; }
 QPushButton#settings_button { background:#ffffff; color:#176b38; border:1px solid #bcd9c4; border-radius:11px; padding:7px 11px; }
 QScrollBar:vertical { background:transparent; width:9px; margin:5px 2px; border-radius:4px; }
@@ -112,7 +131,11 @@ def build_stylesheet(base: str, accent: QColor) -> str:
         QPushButton, QToolButton {{ color:{primary}; background:#ffffff; border:1px solid {border}; border-radius:11px; }}
         QPushButton:hover {{ background:{light}; border-color:{accent.name()}; }}
         QPushButton#new_chat, QPushButton#theme_button, QPushButton#model_button, QPushButton#account_button, QPushButton#settings_button {{ color:{primary}; background:#ffffff; border-color:{border}; border-radius:12px; }}
-        QToolButton#account_button {{ color:{primary}; background:#ffffff; border:1px solid {border}; border-radius:19px; padding:2px; min-width:38px; max-width:42px; min-height:38px; max-height:42px; font-weight:700; }}
+        QPushButton#upload_button {{ background:#f1f8f3; color:{primary}; border:1px solid {border}; border-radius:12px; padding:8px 14px; font-weight:600; }}
+        QPushButton#upload_button:hover {{ background:{light}; border-color:{accent.name()}; }}
+        QPushButton#login_button {{ background:{accent.name()}; color:#ffffff; border:1px solid {primary}; border-radius:14px; padding:8px 14px; font-weight:600; }}
+        QPushButton#login_button:hover {{ background:{primary}; }}
+        QToolButton#account_button {{ color:{primary}; background:#ffffff; border:1px solid {border}; border-radius:19px; padding:3px 9px; min-width:74px; max-width:110px; min-height:38px; max-height:42px; font-weight:700; }}
         QToolButton#account_button:hover {{ background:{light}; border:0; }}
         QToolButton#workspace_button {{ color:{primary}; background:#ffffff; border:1px solid {border}; border-radius:11px; padding:8px 12px; font-weight:600; }}
         QToolButton#workspace_button:hover {{ background:{light}; border-color:{accent.name()}; }}
@@ -125,7 +148,21 @@ def build_stylesheet(base: str, accent: QColor) -> str:
         QPushButton#open_file {{ background:#ffffff; color:{action_blue_dark}; border-color:#90caf9; }}
         QPushButton#open_file:hover {{ background:#e3f2fd; border-color:{action_blue}; color:{action_blue_dark}; }}
         QFrame#topbar, QFrame#file_panel {{ background:#ffffff; border-color:{divider}; }}
-        QTextBrowser#chat, QPlainTextEdit#composer, QPlainTextEdit#file_preview {{ background:#ffffff; color:{primary}; }}
+        QTextBrowser#chat, QPlainTextEdit#composer {{ background:#ffffff; color:{primary}; }}
+        QFrame#agent_action_panel {{ background:#f7fbf8; border:1px solid {border}; border-radius:15px; margin:0 52px; }}
+        QLabel#agent_action_title {{ color:{primary}; font-size:15px; font-weight:700; }}
+        QLabel#agent_action_context {{ color:{primary}; font-size:14px; }}
+        QLabel#agent_action_hint {{ color:{secondary}; font-size:12px; }}
+        QPlainTextEdit#agent_action_details, QPlainTextEdit#agent_action_input {{ background:#ffffff; color:{primary}; border:1px solid {divider}; border-radius:10px; padding:7px 9px; }}
+        QPlainTextEdit#agent_action_input:focus {{ border:2px solid {accent.name()}; }}
+        QPushButton#agent_action_confirm, QPushButton#agent_action_submit {{ background:#4caf50; color:#ffffff; border-color:#388e3c; font-weight:600; }}
+        QPushButton#agent_action_confirm:hover, QPushButton#agent_action_submit:hover {{ background:#388e3c; }}
+        QPushButton#agent_action_auto {{ background:#2e7d52; color:#ffffff; border-color:#236440; font-weight:600; }}
+        QPushButton#agent_action_auto:hover {{ background:#236440; }}
+        QPushButton#agent_action_option {{ background:#ffffff; color:{primary}; border:1px solid #cfe3d4; border-radius:10px; padding:7px 10px; text-align:left; }}
+        QPushButton#agent_action_option:hover {{ background:{light}; border-color:{accent.name()}; }}
+        QPushButton#agent_action_option:checked {{ background:{light}; color:{primary}; border:2px solid {accent.name()}; }}
+        QPushButton#agent_action_cancel {{ color:{secondary}; }}
         QLineEdit#file_filter {{ color:{primary}; border-color:{border}; border-radius:12px; }}
         QTreeWidget#file_tree {{ background:#ffffff; color:{primary}; border-radius:14px; }}
         QTreeWidget#file_tree::item:selected {{ background:#e3f2fd; color:{action_blue_dark}; }}

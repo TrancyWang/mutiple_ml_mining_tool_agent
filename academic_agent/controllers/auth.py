@@ -20,7 +20,9 @@ _CLOUD_KEY_NAMES = (
     "ALIYUN_API_KEY",
     "DASHSCOPE_API_KEY_BJ",
     "DASHSCOPE_API_KEY_SG",
+    "QWEN_API_KEY_BJ",
     "QWEN_API_KEY_SG",
+    "QWEN_BEIJING_API_KEY",
 )
 
 
@@ -68,7 +70,7 @@ class AuthController:
                 return AuthSession(username=ROOT_USERNAME, is_root=True, provider="env")
             return None
         api_key = str(account.get("api_key", "")).strip()
-        if provider in {"gemini", "qwen"} and account.get("remember_api_key") and api_key:
+        if provider in {"gemini", "qwen", "qwen-beijing"} and account.get("remember_api_key") and api_key:
             return AuthSession(username=username, is_root=False, provider=provider, api_key=api_key)
         return None
 
@@ -93,7 +95,7 @@ class AuthController:
         api_key = api_key.strip()
         if not api_key:
             raise ValueError("普通用户必须填写 Gemini 或千问 API Key。")
-        provider = provider if provider in {"gemini", "qwen"} else "gemini"
+        provider = provider if provider in {"gemini", "qwen", "qwen-beijing"} else "gemini"
         session = AuthSession(username=username, is_root=False, provider=provider, api_key=api_key)
         self.store.save_account(
             username,
@@ -110,6 +112,8 @@ class AuthController:
         os.environ["LLM_PROVIDER"] = session.provider
         if session.provider == "gemini":
             os.environ["GEMINI_API_KEY"] = session.api_key
+        elif session.provider == "qwen-beijing":
+            os.environ["DASHSCOPE_API_KEY_BJ"] = session.api_key
         else:
             os.environ["DASHSCOPE_API_KEY_SG"] = session.api_key
         return None
