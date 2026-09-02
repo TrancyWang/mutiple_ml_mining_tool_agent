@@ -194,7 +194,7 @@ def build_main_window(window) -> None:
     self.agent_action_cancel_btn = QPushButton("取消这次任务", objectName="agent_action_cancel")
     self.agent_action_submit_btn = QPushButton("提交信息", objectName="agent_action_submit")
     self.agent_action_cancel_btn.clicked.connect(self._cancel_pending_action)
-    self.agent_action_submit_btn.clicked.connect(self._submit_pending_clarification)
+    self.agent_action_submit_btn.clicked.connect(self._submit_pending_action)
     action_buttons.addWidget(self.agent_action_cancel_btn)
     action_buttons.addWidget(self.agent_action_submit_btn)
     action_layout.addLayout(action_buttons)
@@ -261,18 +261,22 @@ def build_main_window(window) -> None:
     self.model_btn.setMenu(model_menu)
     composer_bar.addWidget(self.model_btn)
 
-    # Plan 审批属于当前输入动作，固定放在模型按钮旁边，避免用户到弹出的卡片里寻找操作。
-    # 这两个按钮只在 Runtime 等待 Plan Review 时显示，平时不占用输入区。
-    self.agent_action_confirm_btn = QPushButton("请求批准", objectName="agent_action_confirm")
-    self.agent_action_confirm_btn.setToolTip("确认当前 Plan，按人工确认模式继续执行")
-    self.agent_action_confirm_btn.setVisible(False)
-    self.agent_action_confirm_btn.clicked.connect(self._request_plan_approval)
-    self.agent_action_auto_btn = QPushButton("帮我批准", objectName="agent_action_auto")
-    self.agent_action_auto_btn.setToolTip("自动确认当前 Plan，并自动选择规划建议继续执行")
-    self.agent_action_auto_btn.setVisible(False)
-    self.agent_action_auto_btn.clicked.connect(self._auto_approve_plan)
-    composer_bar.addWidget(self.agent_action_confirm_btn)
-    composer_bar.addWidget(self.agent_action_auto_btn)
+    # Plan 审批属于当前输入动作，固定放在模型按钮旁边，使用一个下拉框选择执行方式。
+    # 选择只决定“是否需要人工确认”；人工模式下，具体节点仍由下方卡片提供确认动作。
+    self._approval_mode = "manual"
+    self._agent_auto_mode = False
+    self.approval_mode_label = QLabel("执行方式", objectName="approval_mode_label")
+    self.approval_mode_label.setToolTip("选择本次任务是否需要在关键节点停下来确认")
+    self.approval_mode_selector = QComboBox(objectName="approval_mode_selector")
+    self.approval_mode_selector.addItem("请求批准", "manual")
+    self.approval_mode_selector.addItem("帮我批准", "auto")
+    self.approval_mode_selector.setCurrentIndex(0)
+    self.approval_mode_selector.setToolTip(
+        "请求批准：Plan、算法和关键信息节点由你确认；帮我批准：Agent 自动完成这些节点"
+    )
+    self.approval_mode_selector.currentIndexChanged.connect(self._approval_mode_changed)
+    composer_bar.addWidget(self.approval_mode_label)
+    composer_bar.addWidget(self.approval_mode_selector)
     composer_bar.addStretch()
     composer_bar.addWidget(self.send_btn)
     composer_layout.addLayout(composer_bar)

@@ -256,6 +256,14 @@ class TextMiningTools:
             if mode == "general":
                 self._runtime_log("sentiment_analysis", f"加载通用情感模型；待推理文本={len(texts)} 条")
                 results = source_video_text_adapter.general_sentiment(texts)
+                result_indexes = self.current_data.index[valid][:len(results)]
+                self.current_data["sentiment"] = pd.NA
+                self.current_data["sentiment_probability"] = np.nan
+                for row_index, prediction in zip(result_indexes, results):
+                    self.current_data.at[row_index, "sentiment"] = prediction.get("sentiment", "")
+                    self.current_data.at[row_index, "sentiment_probability"] = float(
+                        prediction.get("probability", 0.0)
+                    )
                 source_compatible = pd.DataFrame(results, columns=['text', 'sentiment', 'probability'])
                 summary = (source_compatible.groupby('sentiment', dropna=False)
                            .agg(count=('text', 'size'), mean_probability=('probability', 'mean'))
@@ -439,6 +447,224 @@ class TextMiningTools:
             
         except Exception as e:
             return {"success": False, "error": f"聚类失败: {str(e)}"}
+
+    def repair_text_clustering(self, text_column: Optional[str] = None) -> Dict[str, Any]:
+        """按已有聚类标签重建结果，不重新生成文本向量，也不调用 BERT/BGE。"""
+        try:
+            if self.current_data is None:
+                return {"success": False, "error": "请先加载数据", "repair_mode": True, "used_model": False}
+
+            label_column = next(
+                (
+                    column for column in ("cluster_id", "cluster", "New Cluster")
+                    if column in self.current_data.columns
+                ),
+                None,
+            )
+            if label_column is None:
+                return {
+                    "success": False,
+                    "error": "当前数据没有已有聚类标签，规则修复无法重建结果；请重新发起一次聚类分析。",
+                    "repair_mode": True,
+                    "used_model": False,
+                }
+            text_column = text_column or self.auto_detect_text_column()
+            if not text_column or text_column not in self.current_data.columns:
+                return {
+                    "success": False,
+                    "error": "规则修复找不到原始文本列，无法重建聚类特征描述。",
+                    "repair_mode": True,
+                    "used_model": False,
+                }
+
+            working = self.current_data[[text_column, label_column]].copy()
+            working = working.dropna(subset=[text_column, label_column])
+            working[text_column] = working[text_column].astype(str).str.strip()
+            working = working[working[text_column].ne("")]
+            if working.empty:
+                return {
+                    "success": False,
+                    "error": "已有聚类标签下没有可用文本，规则修复无法继续。",
+                    "repair_mode": True,
+                    "used_model": False,
+                }
+
+            id_column = self._detect_id_column()
+            ids = (
+                self.current_data.loc[working.index, id_column]
+                if id_column else pd.Series(working.index, index=working.index)
+            )
+            source_compatible = pd.DataFrame({
+                "cid": ids.values,
+                "text": working[text_column].values,
+                "cluster_id": working[label_column].values,
+            })
+            summary = (
+                source_compatible.groupby("cluster_id", dropna=False)
+                .agg(segment_count=("text", "size"), unique_text_count=("text", "nunique"))
+                .reset_index()
+            )
+            summary["percentage"] = summary["segment_count"] / max(len(source_compatible), 1)
+
+            cluster_distribution: list[dict[str, Any]] = []
+            cluster_profiles: list[dict[str, Any]] = []
+            for cluster_id, group in source_compatible.groupby("cluster_id", sort=True, dropna=False):
+                representative_texts = [
+                    str(value).replace("\n", " ").strip()[:180]
+                    for value in group["text"].head(3).tolist()
+                    if str(value).strip()
+                ]
+                count = int(len(group))
+                cluster_distribution.append({
+                    "cluster_id": cluster_id,
+                    "segment_count": count,
+                    "percentage": round(count / max(len(source_compatible), 1), 6),
+                })
+                cluster_profiles.append({
+                    "cluster_id": cluster_id,
+                    "segment_count": count,
+                    "percentage": round(count / max(len(source_compatible), 1), 6),
+                    "representative_texts": representative_texts,
+                    "feature_description": "；".join(representative_texts[:2]) or "暂无代表文本",
+                })
+
+            run_dir = create_run_dir(self.current_file_path, "clustering_repair", self.current_source_scope)
+            csv_path = run_dir / f"{Path(self.current_file_path).stem}_clustering_repaired.csv"
+            excel_path = run_dir / f"{Path(self.current_file_path).stem}_clustering_repaired.xlsx"
+            source_compatible.to_csv(csv_path, index=False, encoding="utf-8-sig")
+            write_workbook(excel_path, {
+                "聚类修复结果": source_compatible,
+                "聚类分布": summary,
+                "原始数据与结果": self.current_data.copy(),
+            })
+            distribution_text = "；".join(
+                f"簇{item['cluster_id']}={item['segment_count']}条（{item['percentage']:.2%}）"
+                for item in cluster_distribution
+            )
+            return {
+                "success": True,
+                "message": "已按已有聚类标签重建分布和特征描述。",
+                "output_file": str(excel_path),
+                "output_files": artifact_result([excel_path, csv_path]),
+                "artifacts": artifact_result([excel_path, csv_path]),
+                "algorithm": "rule_based_repair",
+                "implementation": "academic_agent.tools.text_mining_tools.TextMiningTools.repair_text_clustering",
+                "repair_mode": "cluster_structure_repair",
+                "used_model": False,
+                "cluster_distribution": cluster_distribution,
+                "cluster_profiles": cluster_profiles,
+                "n_clusters": len(cluster_distribution),
+                "summary_for_agent": f"规则修复完成；已有标签下共 {len(cluster_distribution)} 个主题簇，完整分布：{distribution_text}。",
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"聚类规则修复失败：{exc}",
+                "repair_mode": True,
+                "used_model": False,
+            }
+
+    def repair_sentiment_analysis(self, text_column: Optional[str] = None) -> Dict[str, Any]:
+        """按已有情感标签重建结果，不重新推理，也不调用任何 BERT 模型。"""
+        try:
+            if self.current_data is None:
+                return {"success": False, "error": "请先加载数据", "repair_mode": True, "used_model": False}
+
+            label_column = next(
+                (
+                    column for column in ("emotion_zh", "sentiment", "predicted_sentiment", "emotion_en")
+                    if column in self.current_data.columns
+                    and self.current_data[column].notna().astype(bool).any()
+                ),
+                None,
+            )
+            if label_column is None:
+                return {
+                    "success": False,
+                    "error": "当前数据没有已有情感标签，规则修复无法补造分类结果；请重新发起一次情感分析。",
+                    "repair_mode": True,
+                    "used_model": False,
+                }
+            text_column = text_column or self.auto_detect_text_column()
+            if not text_column or text_column not in self.current_data.columns:
+                return {
+                    "success": False,
+                    "error": "规则修复找不到原始文本列，无法重建情感结果。",
+                    "repair_mode": True,
+                    "used_model": False,
+                }
+
+            working = self.current_data[[text_column, label_column]].copy()
+            working = working.dropna(subset=[text_column, label_column])
+            working[text_column] = working[text_column].astype(str).str.strip()
+            working[label_column] = working[label_column].astype(str).str.strip()
+            working = working[working[text_column].ne("") & working[label_column].ne("")]
+            if working.empty:
+                return {
+                    "success": False,
+                    "error": "已有情感标签下没有可用文本，规则修复无法继续。",
+                    "repair_mode": True,
+                    "used_model": False,
+                }
+
+            id_column = self._detect_id_column()
+            ids = (
+                self.current_data.loc[working.index, id_column]
+                if id_column else pd.Series(working.index, index=working.index)
+            )
+            probability_column = next(
+                (
+                    column for column in ("probability", "sentiment_probability")
+                    if column in self.current_data.columns
+                ),
+                None,
+            )
+            result_data = {
+                "cid": ids.values,
+                "text": working[text_column].values,
+                "sentiment": working[label_column].values,
+            }
+            if probability_column:
+                result_data["probability"] = pd.to_numeric(
+                    self.current_data.loc[working.index, probability_column], errors="coerce"
+                ).values
+            source_compatible = pd.DataFrame(result_data)
+            aggregation = {"count": ("text", "size")}
+            if "probability" in source_compatible:
+                aggregation["mean_probability"] = ("probability", "mean")
+            summary = (
+                source_compatible.groupby("sentiment", dropna=False)
+                .agg(**aggregation)
+                .reset_index()
+                .sort_values("count", ascending=False)
+            )
+            summary["percentage"] = summary["count"] / max(len(source_compatible), 1)
+
+            run_dir = create_run_dir(self.current_file_path, "sentiment_repair", self.current_source_scope)
+            output_path = run_dir / f"{Path(self.current_file_path).stem}_sentiment_repaired.xlsx"
+            write_workbook(excel_path := output_path, {
+                "情感修复结果": source_compatible,
+                "情感分布": summary,
+                "原始数据与结果": self.current_data.copy(),
+            })
+            return {
+                "success": True,
+                "message": "已按已有情感标签重建情感分布和结果工作簿。",
+                "output_file": str(excel_path),
+                "artifacts": artifact_result([excel_path]),
+                "sentiment_distribution": source_compatible["sentiment"].value_counts().to_dict(),
+                "implementation": "academic_agent.tools.text_mining_tools.TextMiningTools.repair_sentiment_analysis",
+                "repair_mode": "sentiment_structure_repair",
+                "used_model": False,
+                "summary_for_agent": "规则修复完成；仅复用已有情感标签和概率重建结果，没有重新调用 BERT。",
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"情感规则修复失败：{exc}",
+                "repair_mode": True,
+                "used_model": False,
+            }
     
     def extract_keywords(self,
                         text_column: Optional[str] = None,

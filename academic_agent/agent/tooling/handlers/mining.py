@@ -29,6 +29,18 @@ def clustering(**kwargs: Any) -> dict[str, Any]:
     )
 
 
+def repair_clustering(**kwargs: Any) -> dict[str, Any]:
+    from academic_agent.application.services.text_mining_service import text_mining_service
+
+    return text_mining_service.repair_clustering(kwargs.get("text_column"))
+
+
+def repair_sentiment(**kwargs: Any) -> dict[str, Any]:
+    from academic_agent.application.services.text_mining_service import text_mining_service
+
+    return text_mining_service.repair_sentiment(kwargs.get("text_column"))
+
+
 def keywords(**kwargs: Any) -> dict[str, Any]:
     from academic_agent.application.services.text_mining_service import text_mining_service
 

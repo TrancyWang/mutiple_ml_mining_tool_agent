@@ -21,6 +21,12 @@ class TextMiningService:
             text_column, int(n_clusters), algorithm, float(eps), int(min_samples)
         )
 
+    def repair_clustering(self, text_column=None):
+        return self.tool.repair_text_clustering(text_column)
+
+    def repair_sentiment(self, text_column=None):
+        return self.tool.repair_sentiment_analysis(text_column)
+
     def keywords(self, text_column=None, top_n=10):
         return self.tool.extract_keywords(text_column, int(top_n))
 

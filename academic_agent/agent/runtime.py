@@ -576,7 +576,36 @@ class AgentRuntime:
             scope.task_observations[task_id] = []
             scope.record("task_started", task=task.to_dict())
 
-            generated = self._consume(model_runner, self._task_messages(plan, board, task, base_messages))
+            repair_tool = self._repair_tool_for_task(plan, task)
+            if repair_tool:
+                # 修复任务不是普通任务重试：直接走确定性的结果修复工具，
+                # 不再让主 Agent 重新调用文本向量或 BERT 模型。
+                scope.allowed_tools.add(repair_tool)
+                repair_kind = "聚类结果" if repair_tool == "repair_text_clustering" else "情感分析结果"
+                scope.record(
+                    "task_repair_started",
+                    task_id=task_id,
+                    tool=repair_tool,
+                    repair_kind=repair_kind,
+                )
+                repair_result = self.executor.execute(repair_tool)
+                scope.record(
+                    "task_repair_finished",
+                    task_id=task_id,
+                    tool=repair_tool,
+                    success=bool(repair_result.get("success")),
+                )
+                generated = [{
+                    "role": "assistant",
+                    "content": str(
+                        repair_result.get("summary_for_agent")
+                        or repair_result.get("message")
+                        or repair_result.get("error")
+                        or "规则修复未返回说明"
+                    ),
+                }]
+            else:
+                generated = self._consume(model_runner, self._task_messages(plan, board, task, base_messages))
             task.result = self._response_text(generated)
             scope.record("task_draft_created", task_id=task_id)
             task.status = TaskStatus.VERIFYING
@@ -666,6 +695,34 @@ class AgentRuntime:
         self.last_task_board = board
         session_store.get(scope.request.session_id).task_board = board.to_dict()
         return [{"role": "assistant", "content": self._assemble_results(board)}]
+
+    @staticmethod
+    def _repair_tool_for_task(plan: AgentPlan, task: TaskItem) -> str | None:
+        """判断任务是否应进入结果修复路径，而不是再次调用原始模型。"""
+        text = " ".join(
+            str(value or "")
+            for value in (task.title, task.description, task.task_goal, task.deliverable, task.done_when)
+        ).lower()
+        repair_markers = (
+            "修复", "补全", "重建", "截断", "不完整", "repair", "retry",
+        )
+        is_retry_or_repair = task.attempts > 1 or bool(getattr(plan, "is_replan", False)) or any(
+            marker in text for marker in repair_markers
+        )
+        if not is_retry_or_repair:
+            return None
+
+        cluster_markers = (
+            "聚类", "主题簇", "cluster", "kmeans", "agglomerative", "dbscan",
+        )
+        sentiment_markers = (
+            "情感分析", "情绪分析", "情感分布", "sentiment",
+        )
+        if any(marker in text for marker in cluster_markers):
+            return "repair_text_clustering"
+        if any(marker in text for marker in sentiment_markers):
+            return "repair_sentiment_analysis"
+        return None
 
     def _replan_after_failure(
         self,

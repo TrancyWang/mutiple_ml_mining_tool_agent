@@ -24,7 +24,7 @@ class TaskPlanner:
     """完成确定性的能力路由，不替模型硬编码完整任务清单。"""
 
     _PROJECT = re.compile(r"文件|目录|工作区|项目|代码|glob|grep|读取|修改|生成|删除", re.I)
-    _DOCUMENT = re.compile(r"文档|PDF|pdf|手册|论文|报告|资料|知识库|检索|引用|原文", re.I)
+    _DOCUMENT = re.compile(r"文档|文献|学术|研究|PDF|pdf|手册|论文|报告|资料|知识库|检索|引用|原文", re.I)
     _VISUAL = re.compile(r"画图|图表|可视化|折线图|柱状图|词云|散点图|热力图", re.I)
     _ML = re.compile(r"机器学习|分类|回归|因果|预测|训练|特征", re.I)
     _DATA = re.compile(r"文本挖掘|聚类|情感|关键词|预处理|数据|字段|表格", re.I)
@@ -33,22 +33,22 @@ class TaskPlanner:
     _ACADEMIC_INTENT_OPTIONS = (
         {
             "label": "文本挖掘",
-            "value": "文本挖掘：聚类、情感分析、关键词提取或主题分析",
+            "value": "文本挖掘",
             "description": "适合评论、问卷、访谈、论文摘要等文本数据。",
         },
         {
             "label": "机器学习",
-            "value": "机器学习：分类、回归、预测、特征处理或因果分析",
+            "value": "机器学习",
             "description": "适合明确目标变量、特征变量或研究假设的数据建模。",
         },
         {
             "label": "数据分析与可视化",
-            "value": "数据分析与可视化：数据清洗、统计分析、分布图或关系图",
+            "value": "数据分析与可视化",
             "description": "适合先了解数据质量、统计规律和图表呈现。",
         },
         {
             "label": "学术文献与研究",
-            "value": "学术文献与研究：论文、PDF、文献检索、引用或研究设计",
+            "value": "学术文献与研究",
             "description": "适合文献证据整理、论文资料问答和研究方案梳理。",
         },
     )

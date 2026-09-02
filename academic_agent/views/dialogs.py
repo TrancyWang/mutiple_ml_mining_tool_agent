@@ -92,8 +92,10 @@ class AlgorithmSelectionDialog(QDialog):
             self.task_combo.currentIndexChanged.connect(self._task_changed)
 
         self.automatic = QCheckBox("全自动化（使用推荐算法和默认参数）")
-        self.automatic.setChecked(True)
-        self.automatic.setToolTip("跳过手动配置，使用当前任务的推荐算法和默认参数。")
+        # 人工请求批准时，核心方法必须由用户明确选择；只有用户主动勾选
+        # 或点击“帮我批准”时，才允许采用推荐算法和默认参数。
+        self.automatic.setChecked(False)
+        self.automatic.setToolTip("仅在你确认允许自动选择时，才使用当前任务的推荐算法和默认参数。")
         layout.addWidget(self.automatic)
 
         algorithm_group = QGroupBox("算法选择")
@@ -125,7 +127,7 @@ class AlgorithmSelectionDialog(QDialog):
             self._task_changed(self.task_combo.currentIndex())
         else:
             self._populate_algorithms()
-        self._toggle_manual_controls(True)
+        self._toggle_manual_controls(self.automatic.isChecked())
 
     def _task_changed(self, _index: int) -> None:
         from academic_agent.agent.planning.configuration import machine_learning_configuration
@@ -139,14 +141,10 @@ class AlgorithmSelectionDialog(QDialog):
         self.algorithm_combo.blockSignals(True)
         self.algorithm_combo.clear()
         options = self._active_configuration.get("options", [])
+        self.algorithm_combo.addItem("请选择一种算法", None)
         for option in options:
             self.algorithm_combo.addItem(option.get("label", option.get("key", "算法")), option)
-        default_key = self._active_configuration.get("default_algorithm")
-        if default_key:
-            for index, option in enumerate(options):
-                if option.get("key") == default_key:
-                    self.algorithm_combo.setCurrentIndex(index)
-                    break
+        self.algorithm_combo.setCurrentIndex(0)
         self.algorithm_combo.blockSignals(False)
         self._algorithm_changed(self.algorithm_combo.currentIndex())
 
@@ -174,14 +172,29 @@ class AlgorithmSelectionDialog(QDialog):
         self._toggle_manual_controls(self.automatic.isChecked())
 
     def _toggle_manual_controls(self, automatic: bool) -> None:
+        if automatic and self.algorithm_combo.currentData() is None:
+            self._select_default_algorithm()
         enabled = not automatic
         self.algorithm_combo.setEnabled(enabled)
         self.parameters_group.setEnabled(enabled)
 
+    def _select_default_algorithm(self) -> None:
+        default_key = self._active_configuration.get("default_algorithm")
+        options = self._active_configuration.get("options", [])
+        for index, option in enumerate(options, start=1):
+            if option.get("key") == default_key:
+                self.algorithm_combo.setCurrentIndex(index)
+                return
+        if options:
+            self.algorithm_combo.setCurrentIndex(1)
+
     def _accept_selection(self) -> None:
         option = self.algorithm_combo.currentData() or {}
+        if self.automatic.isChecked() and not option:
+            self._select_default_algorithm()
+            option = self.algorithm_combo.currentData() or {}
         if not option:
-            QMessageBox.warning(self, "缺少算法", "请选择一个算法后继续。")
+            QMessageBox.warning(self, "请选择算法", "当前任务还没有确定分析方法，请先选择一种算法后继续。")
             return
         automatic = self.automatic.isChecked()
         parameters = {

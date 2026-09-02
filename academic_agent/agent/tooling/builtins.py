@@ -23,6 +23,8 @@ def register_builtin_tools() -> None:
         ToolSpec("preprocess_text", "文本预处理", "文本挖掘", "调用 video_text_mutiplemodal_agent.Data_PreProcessor", mining.preprocess),
         ToolSpec("sentiment_analysis", "情感分析", "文本挖掘", "调用 video_text_mutiplemodal_agent 情感模型", mining.sentiment),
         ToolSpec("text_clustering", "文本聚类", "文本挖掘", "调用 video_text_mutiplemodal_agent.VideoTextClustering", mining.clustering),
+        ToolSpec("repair_sentiment_analysis", "修复情感分析结果", "文本挖掘", "按已有情感标签重建结果，不重新调用 BERT", mining.repair_sentiment),
+        ToolSpec("repair_text_clustering", "修复聚类结果", "文本挖掘", "按已有聚类标签重建分布和特征，不重新调用 BERT/BGE", mining.repair_clustering),
         ToolSpec("extract_keywords", "关键词提取", "文本挖掘", "调用 video_text_mutiplemodal_agent.TextKeyBert", mining.keywords),
         ToolSpec("regression", "回归分析", "机器学习", "调用项目 algorithms/machine_learning 回归类", ml.regression),
         ToolSpec("classification", "分类分析", "机器学习", "调用项目 SVMClassificationTool", ml.classification),

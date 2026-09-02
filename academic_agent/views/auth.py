@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -57,7 +58,7 @@ class LoginDialog(QDialog):
             QLabel#title { color:#176b38; font-size:26px; font-weight:700; padding:4px 0 2px; }
             QLabel#hint { color:#5a8968; font-size:13px; line-height:1.5; padding-bottom:6px; }
             QLabel#error { color:#b24b4b; padding:6px 0; }
-            QLineEdit, QComboBox { background:#ffffff; color:#245c36; border:1px solid #bcd9c4; border-radius:12px; padding:10px 13px; min-height:30px; }
+            QLineEdit, QComboBox { background:#ffffff; color:#245c36; border:1px solid #bcd9c4; border-radius:12px; padding:10px 13px; min-height:30px; selection-background-color:#c8e6c9; selection-color:#1b5e20; }
             QLineEdit:focus, QComboBox:focus { border:2px solid #43a047; }
             QCheckBox { color:#245c36; padding:6px 0; }
             QLabel#mode_hint { color:#5a8968; font-size:12px; padding:2px 0; }
@@ -89,19 +90,41 @@ class LoginDialog(QDialog):
         self.username_edit.setReadOnly(False)
         self.username_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.username_edit.setPlaceholderText("用户名")
+        self._configure_input(self.username_edit)
         self.username_edit.textChanged.connect(self._update_root_fields)
         self.password_edit = QLineEdit()
-        self.password_edit.setPlaceholderText("管理员密码；普通用户可留空")
+        self.password_edit.setObjectName("password_edit")
+        self.password_edit.setEnabled(True)
+        self.password_edit.setReadOnly(False)
+        self.password_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.password_edit.setClearButtonEnabled(True)
+        self.password_edit.setPlaceholderText("点击此处输入管理员密码；普通用户可留空")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._configure_input(self.password_edit)
+        self.password_edit.returnPressed.connect(self._submit)
+        self.show_password = QCheckBox("显示密码")
+        self.show_password.setToolTip("临时显示密码，方便确认是否输入正确")
+        self.show_password.toggled.connect(
+            lambda visible: self.password_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
+            )
+        )
         self.provider_combo = QComboBox()
         self.provider_combo.addItem("Gemini", "gemini")
         self.provider_combo.addItem("千问（新加坡）", "qwen")
         self.provider_combo.addItem("千问（北京）", "qwen-beijing")
         self.api_key_edit = QLineEdit()
+        self.api_key_edit.setObjectName("api_key_edit")
+        self.api_key_edit.setEnabled(True)
+        self.api_key_edit.setReadOnly(False)
+        self.api_key_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.api_key_edit.setClearButtonEnabled(True)
         self.api_key_edit.setPlaceholderText("请输入对应服务的 API Key")
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._configure_input(self.api_key_edit)
         form.addRow("用户名", self.username_edit)
         form.addRow("密码", self.password_edit)
+        form.addRow("", self.show_password)
         form.addRow("模型服务", self.provider_combo)
         form.addRow("API Key", self.api_key_edit)
         layout.addLayout(form)
@@ -130,18 +153,40 @@ class LoginDialog(QDialog):
 
         self._restore_last_account()
         self._update_root_fields(self.username_edit.text())
+        self.setTabOrder(self.username_edit, self.password_edit)
+        self.setTabOrder(self.password_edit, self.provider_combo)
+        self.setTabOrder(self.provider_combo, self.api_key_edit)
         # 部分平台会在模态窗口显示时把焦点交给按钮或下拉框；延迟到
         # event loop 后重新聚焦，保证用户打开登录框即可直接输入用户名。
         QTimer.singleShot(0, self._focus_username)
 
     def _focus_username(self) -> None:
-        """让用户名输入框在窗口显示后获得焦点，并选中已恢复的旧用户名。"""
+        """让用户名输入框在窗口显示后获得焦点，并把光标放到文本末尾。"""
         if not self.isVisible():
             return
         self.username_edit.setEnabled(True)
         self.username_edit.setReadOnly(False)
         self.username_edit.setFocus(Qt.FocusReason.OtherFocusReason)
-        self.username_edit.selectAll()
+        # 不全选恢复的用户名：部分 macOS/Qt 主题在全选状态下会把插入光标
+        # 绘制得非常不明显，用户会误以为输入框不能编辑。
+        self.username_edit.setCursorPosition(len(self.username_edit.text()))
+
+    @staticmethod
+    def _configure_input(widget: QLineEdit) -> None:
+        """统一保证登录输入框可编辑，并使用清晰可见的文字/光标配色。"""
+        palette = widget.palette()
+        dark_text = QColor("#245c36")
+        light_base = QColor("#ffffff")
+        selected_base = QColor("#c8e6c9")
+        selected_text = QColor("#1b5e20")
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+            palette.setColor(group, QPalette.ColorRole.Text, dark_text)
+            palette.setColor(group, QPalette.ColorRole.Base, light_base)
+            palette.setColor(group, QPalette.ColorRole.Highlight, selected_base)
+            palette.setColor(group, QPalette.ColorRole.HighlightedText, selected_text)
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#7a9d84"))
+        widget.setPalette(palette)
+        widget.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
 
     def _update_root_fields(self, username: str) -> None:
         """管理员凭据来自 .env，不让 API Key 输入框造成必须填写的误解。"""

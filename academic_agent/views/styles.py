@@ -31,10 +31,6 @@ QLabel#agent_action_context { color:#2e6f43; font-size:14px; }
 QLabel#agent_action_hint { color:#668270; font-size:12px; }
 QPlainTextEdit#agent_action_details, QPlainTextEdit#agent_action_input { background:#ffffff; color:#2e6f43; border:1px solid #d7e8dc; border-radius:10px; padding:7px 9px; }
 QPlainTextEdit#agent_action_input:focus { border:2px solid #43a047; }
-QPushButton#agent_action_confirm { background:#4caf50; color:#ffffff; border-color:#388e3c; font-weight:600; }
-QPushButton#agent_action_confirm:hover { background:#388e3c; }
-QPushButton#agent_action_auto { background:#2e7d52; color:#ffffff; border-color:#236440; font-weight:600; }
-QPushButton#agent_action_auto:hover { background:#236440; }
 QPushButton#agent_action_submit { background:#4caf50; color:#ffffff; border-color:#388e3c; font-weight:600; }
 QPushButton#agent_action_submit:hover { background:#388e3c; }
 QPushButton#agent_action_cancel { color:#668270; }
@@ -61,6 +57,10 @@ QComboBox#mode_selector { background:#ffffff; color:#176b38; border:1px solid #b
 QComboBox#mode_selector:hover { border-color:#79b88a; background:#f1f8f3; }
 QComboBox#mode_selector::drop-down { border:0; width:28px; }
 QComboBox#mode_selector QAbstractItemView { background:#ffffff; color:#2e6f43; selection-background-color:#eff8f1; selection-color:#176b38; border:1px solid #bcd9c4; }
+QLabel#approval_mode_label { color:#668270; font-size:12px; padding-left:4px; }
+QComboBox#approval_mode_selector { background:#f7fbf8; color:#176b38; border:1px solid #bcd9c4; border-radius:11px; padding:7px 10px; min-width:92px; min-height:24px; font-weight:600; }
+QComboBox#approval_mode_selector:hover { border-color:#79b88a; background:#e8f5e9; }
+QComboBox#approval_mode_selector QAbstractItemView { background:#ffffff; color:#2e6f43; selection-background-color:#e8f5e9; selection-color:#176b38; border:1px solid #bcd9c4; }
 QToolButton#common_toggle { background:#f3faf5; color:#176b38; border:1px solid #c4e1cc; border-radius:12px; text-align:left; padding:9px 12px; font-size:14px; font-weight:700; }
 QToolButton#common_toggle:hover { background:#c8e6c9; border-color:#66bb6a; }
 QToolButton#workspace_button { background:#ffffff; color:#176b38; border:1px solid #bcd9c4; border-radius:11px; padding:8px 12px; font-weight:600; }
@@ -155,14 +155,16 @@ def build_stylesheet(base: str, accent: QColor) -> str:
         QLabel#agent_action_hint {{ color:{secondary}; font-size:12px; }}
         QPlainTextEdit#agent_action_details, QPlainTextEdit#agent_action_input {{ background:#ffffff; color:{primary}; border:1px solid {divider}; border-radius:10px; padding:7px 9px; }}
         QPlainTextEdit#agent_action_input:focus {{ border:2px solid {accent.name()}; }}
-        QPushButton#agent_action_confirm, QPushButton#agent_action_submit {{ background:#4caf50; color:#ffffff; border-color:#388e3c; font-weight:600; }}
-        QPushButton#agent_action_confirm:hover, QPushButton#agent_action_submit:hover {{ background:#388e3c; }}
-        QPushButton#agent_action_auto {{ background:#2e7d52; color:#ffffff; border-color:#236440; font-weight:600; }}
-        QPushButton#agent_action_auto:hover {{ background:#236440; }}
+        QPushButton#agent_action_submit {{ background:#4caf50; color:#ffffff; border-color:#388e3c; font-weight:600; }}
+        QPushButton#agent_action_submit:hover {{ background:#388e3c; }}
         QPushButton#agent_action_option {{ background:#ffffff; color:{primary}; border:1px solid #cfe3d4; border-radius:10px; padding:7px 10px; text-align:left; }}
         QPushButton#agent_action_option:hover {{ background:{light}; border-color:{accent.name()}; }}
         QPushButton#agent_action_option:checked {{ background:{light}; color:{primary}; border:2px solid {accent.name()}; }}
         QPushButton#agent_action_cancel {{ color:{secondary}; }}
+        QLabel#approval_mode_label {{ color:{secondary}; font-size:12px; padding-left:4px; }}
+        QComboBox#approval_mode_selector {{ background:#f7fbf8; color:{primary}; border:1px solid {border}; border-radius:11px; padding:7px 10px; min-width:92px; min-height:24px; font-weight:600; }}
+        QComboBox#approval_mode_selector:hover {{ border-color:{accent.name()}; background:{light}; }}
+        QComboBox#approval_mode_selector QAbstractItemView {{ background:#ffffff; color:{primary}; selection-background-color:{light}; selection-color:{primary}; border:1px solid {border}; }}
         QLineEdit#file_filter {{ color:{primary}; border-color:{border}; border-radius:12px; }}
         QTreeWidget#file_tree {{ background:#ffffff; color:{primary}; border-radius:14px; }}
         QTreeWidget#file_tree::item:selected {{ background:#e3f2fd; color:{action_blue_dark}; }}

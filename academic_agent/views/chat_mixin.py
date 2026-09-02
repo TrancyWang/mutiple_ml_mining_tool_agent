@@ -8,6 +8,7 @@ import html
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QTimer, Qt, QUrl
@@ -23,6 +24,11 @@ class ChatMixin:
 
     _TEXT_MINING_TRIGGER = re.compile(
         r"文本挖掘|文本聚类|聚类|情感分析|情感识别|关键词提取|主题词|文本预处理|分词|意图识别|响应识别|行为识别"
+    )
+    _TEXT_REPAIR_TRIGGER = re.compile(
+        r"聚类修复|修复聚类|主题簇修复|情感分析修复|修复情感|情绪分析修复|"
+        r"repair[_ -]?(?:cluster|clustering|sentiment)",
+        re.IGNORECASE,
     )
     _IMAGE_REQUEST_TRIGGER = re.compile(
         r"画图|绘图|作图|图表|可视化|折线图|柱状图|条形图|饼图|散点图|热力图|分布图|词云|"
@@ -161,7 +167,11 @@ class ChatMixin:
             return
         if not self.ensure_authenticated():
             return
-        if self._TEXT_MINING_TRIGGER.search(text) and not self._ensure_text_mining_model():
+        if (
+            self._TEXT_MINING_TRIGGER.search(text)
+            and not self._TEXT_REPAIR_TRIGGER.search(text)
+            and not self._ensure_text_mining_model()
+        ):
             self.statusBar().showMessage("未设置文本挖掘模型，已取消本次任务")
             return
         if hasattr(self, "_mark_active_session"):
@@ -169,8 +179,8 @@ class ChatMixin:
         self.composer.clear()
         self.messages.append({"role": "user", "content": text})
         self.current_assistant = ""
-        # “帮我批准”只作用于当前这次任务，避免下一轮请求意外沿用全自动模式。
-        self._agent_auto_mode = False
+        # 发送前由输入区旁的两个常驻按钮决定本次任务的审批方式。
+        self._agent_auto_mode = getattr(self, "_approval_mode", "manual") == "auto"
         from academic_agent.agent.session import session_store
 
         artifacts_before = list(session_store.get(self.session_id).artifacts)
@@ -214,6 +224,11 @@ class ChatMixin:
         steps = self.messages[-1].setdefault("_execution_steps", [])
         logs = self.messages[-1].setdefault("_execution_logs", [])
         event_type = str(event.get("type", ""))
+        previous_status = {
+            str(step.get("key")): str(step.get("status", "pending"))
+            for step in steps
+            if step.get("key")
+        }
 
         def finish_active() -> None:
             for step in steps:
@@ -230,16 +245,20 @@ class ChatMixin:
                 })
         elif event_type == "plan_created":
             finish_active()
+            created_plan_steps = []
             for index, plan_step in enumerate(event.get("steps") or [], 1):
                 description = str(plan_step.get("description", "执行任务步骤"))
                 if any(step.get("label") == description for step in steps):
                     continue
-                steps.append({
+                created_plan_steps.append({
                     "key": f"plan_{index}",
                     "label": description,
                     "status": "pending",
                     "suggested_tools": list(plan_step.get("suggested_tools") or []),
                 })
+            steps.extend(created_plan_steps)
+            if created_plan_steps:
+                created_plan_steps[0]["status"] = "running"
         elif event_type == "plan_review_fallback":
             reason = str(event.get("reason") or "规划模型未返回可识别结构")
             logs.append({
@@ -270,14 +289,28 @@ class ChatMixin:
             })
             self._show_clarification(info, key)
         elif event_type == "task_board_created":
+            # plan_* 是规划阶段的静态预览；真正执行开始后改为展示动态任务板。
+            # 重规划会重新从 T1 编号，因此必须清理上一轮 task_* 行，不能复用旧状态。
+            if event.get("is_replan"):
+                steps[:] = [
+                    step for step in steps
+                    if not str(step.get("key", "")).startswith("task_")
+                ]
+            steps[:] = [
+                step for step in steps
+                if not re.match(r"^plan_\d+$", str(step.get("key", "")))
+            ]
             for task in (event.get("board") or {}).get("tasks", []):
                 task_id = str(task.get("id", "task"))
-                if not any(step.get("key") == f"task_{task_id}" for step in steps):
-                    steps.append({
+                matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
+                if matched is None:
+                    matched = {
                         "key": f"task_{task_id}",
                         "label": str(task.get("title", "执行任务")),
                         "status": "pending",
-                    })
+                    }
+                    steps.append(matched)
+                matched["status"] = self._ui_task_status(task.get("status"))
         elif event_type == "task_started":
             task = event.get("task") or {}
             task_id = str(task.get("id", "task"))
@@ -323,8 +356,20 @@ class ChatMixin:
                     steps.append({
                         "key": f"task_{task_id}",
                         "label": str(task.get("title", "新增任务")),
-                        "status": "pending",
+                        "status": self._ui_task_status(task.get("status")),
                     })
+        elif event_type in {"task_board_state", "convergence_completed", "convergence_blocked"}:
+            board = event.get("board") or {}
+            for task in board.get("tasks", []):
+                task_id = str(task.get("id", "task"))
+                matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
+                if matched is not None:
+                    matched["status"] = self._ui_task_status(task.get("status"))
+        elif event_type == "task_repair_started":
+            logs.append({
+                "message": f"已切换到规则修复路径：{event.get('repair_kind', '文本分析结果')}（不重新调用 BERT）",
+                "level": "info",
+            })
         elif event_type == "replan_requested":
             logs.append({
                 "message": f"Reflection 建议重新规划：{event.get('reason', '')}",
@@ -377,13 +422,72 @@ class ChatMixin:
             response = next((step for step in steps if step.get("key") == "response"), None)
             if response is not None:
                 response["status"] = "completed"
+        self._flash_newly_completed_steps(previous_status, steps)
         self._schedule_stream_render()
+
+    @staticmethod
+    def _ui_task_status(status: object) -> str:
+        """把 TaskStatus 和界面图标状态解耦。"""
+        value = str(status or "ready").lower()
+        if value in {"completed", "complete"}:
+            return "completed"
+        if value in {"running", "verifying", "waiting_user"}:
+            return "running"
+        if value in {"failed", "blocked"}:
+            return "failed"
+        return "pending"
+
+    def _flash_newly_completed_steps(
+        self,
+        previous_status: dict[str, str],
+        steps: list[dict],
+    ) -> None:
+        """让每个刚完成的步骤短暂高亮，随后恢复为普通完成状态。"""
+        now = time.monotonic()
+        flashed = False
+        for step in steps:
+            key = str(step.get("key", ""))
+            if step.get("status") == "completed" and previous_status.get(key) != "completed":
+                step["_completion_flash_until"] = now + 0.72
+                flashed = True
+        if not flashed:
+            return
+        timer = getattr(self, "_execution_flash_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._clear_execution_flashes)
+            self._execution_flash_timer = timer
+        timer.start(720)
+
+    def _clear_execution_flashes(self) -> None:
+        now = time.monotonic()
+        has_future_flash = False
+        changed = False
+        if self.messages:
+            for step in self.messages[-1].get("_execution_steps", []):
+                until = float(step.get("_completion_flash_until", 0) or 0)
+                if until and until <= now:
+                    step.pop("_completion_flash_until", None)
+                    changed = True
+                elif until > now:
+                    has_future_flash = True
+        if changed:
+            self._render_messages()
+        if has_future_flash:
+            timer = getattr(self, "_execution_flash_timer", None)
+            if timer is not None:
+                timer.start(120)
 
     def _show_plan_review(self, plan: dict, board: dict) -> None:
         """在对话下方显示 Plan 卡片，避免模态窗口打断当前对话。"""
         self._pending_plan_review = {"plan": plan, "board": board}
         self._pending_plan_review_key = "replan_review" if plan.get("is_replan") else "plan_review"
         self._pending_clarification = None
+        if getattr(self, "_agent_auto_mode", False):
+            # 全自动模式不展示中间审批卡片，也不让后台线程在这里等待。
+            self._finish_plan_approval(auto_mode=True)
+            return
         if plan.get("is_replan"):
             self.agent_action_title.setText("任务遇到问题，需要重新规划")
             reason = str(plan.get("replan_reason") or "当前任务未通过检查")
@@ -409,14 +513,13 @@ class ChatMixin:
                 preview.append(f"   完成标准：{done_when}")
         self.agent_action_details.setPlainText("\n".join(item for item in preview if item))
         self.agent_action_hint.setText(
-            "请使用输入框下方、模型按钮旁边的“请求批准”或“帮我批准”继续；"
-            "如果方向不对，请点击卡片中的“取消这次任务”。"
+            "当前执行方式为“请求批准”，请确认后继续；如果方向不对，请点击“取消这次任务”。"
         )
         self.agent_action_details.setVisible(True)
         self.agent_action_options.setVisible(False)
-        self.agent_action_confirm_btn.setVisible(True)
-        self.agent_action_auto_btn.setVisible(True)
-        self.agent_action_submit_btn.setVisible(False)
+        self.agent_action_submit_btn.setText("确认执行计划")
+        self.agent_action_submit_btn.setVisible(True)
+        self.agent_action_submit_btn.setEnabled(True)
         self.agent_action_cancel_btn.setVisible(True)
         self.agent_action_panel.setVisible(True)
         self.agent_action_panel.raise_()
@@ -428,6 +531,10 @@ class ChatMixin:
         self._pending_plan_review = None
         topic = str(information.get("topic") or "规划信息")
         question = str(information.get("question") or "请补充必要信息")
+        if getattr(self, "_agent_auto_mode", False):
+            # 全自动模式直接采用规划模型提供的首选项，不打断任务执行。
+            self._answer_clarification_automatically(information, key)
+            return
         why_needed = str(information.get("why_needed") or "")
         expected = str(
             information.get("expected_format")
@@ -448,16 +555,13 @@ class ChatMixin:
         self.agent_action_hint.setText("请选择最符合你实际情况的一项；如果都不完全匹配，选择最接近的一项即可。")
         self.agent_action_details.setVisible(bool(detail_lines))
         self._populate_action_options(information)
-        self.agent_action_confirm_btn.setVisible(False)
-        self.agent_action_auto_btn.setVisible(False)
+        self.agent_action_submit_btn.setText("提交选择")
         self.agent_action_submit_btn.setVisible(True)
         self.agent_action_submit_btn.setEnabled(False)
         self.agent_action_cancel_btn.setVisible(True)
         self.agent_action_panel.setVisible(True)
         self.agent_action_panel.raise_()
         self.statusBar().showMessage("请在对话下方补充这项信息")
-        if getattr(self, "_agent_auto_mode", False):
-            self._answer_clarification_automatically(information, key)
 
     def _populate_action_options(self, information: dict) -> None:
         """把规划模型提供的选项渲染成可点击按钮，不要求用户自由输入。"""
@@ -521,11 +625,43 @@ class ChatMixin:
         self._pending_plan_review_key = "plan_review"
         self._pending_clarification = None
         self.agent_action_panel.setVisible(False)
-        # 审批按钮位于输入区，不随详情卡片自动隐藏，因此这里要显式收起。
-        if hasattr(self, "agent_action_confirm_btn"):
-            self.agent_action_confirm_btn.setVisible(False)
-        if hasattr(self, "agent_action_auto_btn"):
-            self.agent_action_auto_btn.setVisible(False)
+
+    def _submit_pending_action(self) -> None:
+        """根据当前卡片类型提交人工确认或补充信息。"""
+        if getattr(self, "_pending_plan_review", None):
+            self._request_plan_approval()
+        elif getattr(self, "_pending_clarification", None):
+            self._submit_pending_clarification()
+
+    def _approval_mode_changed(self, _index: int) -> None:
+        """响应输入区的唯一执行方式选择器。"""
+        selector = getattr(self, "approval_mode_selector", None)
+        auto_mode = bool(selector is not None and selector.currentData() == "auto")
+        self._set_approval_mode(auto_mode, announce=True)
+        if auto_mode and getattr(self, "_pending_plan_review", None):
+            self._finish_plan_approval(auto_mode=True)
+        elif auto_mode and getattr(self, "_pending_clarification", None):
+            pending = self._pending_clarification
+            self._answer_clarification_automatically(
+                pending.get("information") or {},
+                str(pending.get("key") or ""),
+            )
+
+    def _set_approval_mode(self, auto_mode: bool, announce: bool = True) -> None:
+        """更新唯一执行方式选择器。"""
+        self._approval_mode = "auto" if auto_mode else "manual"
+        self._agent_auto_mode = auto_mode
+        selector = getattr(self, "approval_mode_selector", None)
+        if selector is not None:
+            selector.blockSignals(True)
+            selector.setCurrentIndex(selector.findData("auto" if auto_mode else "manual"))
+            selector.blockSignals(False)
+        if announce:
+            self.statusBar().showMessage(
+                "已选择请求批准：Plan 生成后由你确认"
+                if not auto_mode else
+                "已选择帮我批准：本次任务将自动确认 Plan 并继续执行"
+            )
 
     def _finish_plan_approval(self, auto_mode: bool) -> None:
         if not getattr(self, "_pending_plan_review", None):
@@ -544,12 +680,20 @@ class ChatMixin:
         self._render_messages()
 
     def _request_plan_approval(self) -> None:
-        self._agent_auto_mode = False
-        self._finish_plan_approval(auto_mode=False)
+        self._set_approval_mode(False, announce=False)
+        if getattr(self, "_pending_plan_review", None):
+            self._finish_plan_approval(auto_mode=False)
 
     def _auto_approve_plan(self) -> None:
-        self._agent_auto_mode = True
-        self._finish_plan_approval(auto_mode=True)
+        self._set_approval_mode(True, announce=False)
+        if getattr(self, "_pending_plan_review", None):
+            self._finish_plan_approval(auto_mode=True)
+        elif getattr(self, "_pending_clarification", None):
+            pending = self._pending_clarification
+            self._answer_clarification_automatically(
+                pending.get("information") or {},
+                str(pending.get("key") or ""),
+            )
 
     def _answer_clarification_automatically(self, information: dict, key: str) -> None:
         """全自动模式下选择规划模型提供的第一项建议。"""
@@ -804,8 +948,13 @@ class ChatMixin:
         for step in steps:
             icon, color = icons.get(str(step.get("status", "pending")), icons["pending"])
             label = html.escape(str(step.get("label", "执行步骤")))
+            flashing = float(step.get("_completion_flash_until", 0) or 0) > time.monotonic()
+            row_style = (
+                "margin:3px 0; padding:2px 6px; background:#e8f5e9; border-radius:6px;"
+                if flashing else "margin:3px 0; padding:2px 6px;"
+            )
             lines.append(
-                f'<div style="margin:3px 0; color:#55745f;">'
+                f'<div style="{row_style} color:#55745f;">'
                 f'<span style="color:{color}; font-weight:700;">{icon}</span>&nbsp;{label}</div>'
             )
         return (
