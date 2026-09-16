@@ -113,6 +113,24 @@ def test_work_mode_asks_for_academic_intent_when_route_is_unclear():
     assert "text_clustering" in refined.available_tools
 
 
+def test_uploaded_file_analysis_routes_to_data_not_project():
+    planner = TaskPlanner()
+    for query in (
+        "请查看当前文件的数据规模、字段和缺失值",
+        "请对当前文件的评论列做文本聚类",
+    ):
+        request = AgentRequest(
+            [{"role": "user", "content": query}],
+            "u",
+            "uploaded-file-routing-test",
+        )
+        plan = planner.create_plan(request)
+        assert plan.route is AgentRoute.DATA
+        assert "data_statistics" in plan.available_tools
+        assert "text_clustering" in plan.available_tools
+        assert "list_project_files" not in plan.available_tools
+
+
 def test_cluster_structured_evidence_survives_truncated_draft():
     task = TaskItem(
         "T1",

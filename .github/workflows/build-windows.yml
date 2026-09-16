@@ -22,13 +22,13 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-          cache-dependency-path: requirements-windows.txt
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-windows.txt
+          python -m pip install -r requirements.txt
 
       - name: Create Windows icon
         shell: pwsh

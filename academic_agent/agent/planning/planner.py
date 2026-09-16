@@ -23,7 +23,9 @@ from academic_agent.agent.types import (
 class TaskPlanner:
     """完成确定性的能力路由，不替模型硬编码完整任务清单。"""
 
-    _PROJECT = re.compile(r"文件|目录|工作区|项目|代码|glob|grep|读取|修改|生成|删除", re.I)
+    # “当前文件”通常是用户上传的数据文件，不应因为出现“文件”二字
+    # 就被路由到项目工作区；只有明确提到工作区/项目/代码操作时才走 project。
+    _PROJECT = re.compile(r"目录|工作区|项目|代码|glob|grep|读取|修改|生成|删除", re.I)
     _DOCUMENT = re.compile(r"文档|文献|学术|研究|PDF|pdf|手册|论文|报告|资料|知识库|检索|引用|原文", re.I)
     _VISUAL = re.compile(r"画图|图表|可视化|折线图|柱状图|词云|散点图|热力图", re.I)
     _ML = re.compile(r"机器学习|分类|回归|因果|预测|训练|特征", re.I)

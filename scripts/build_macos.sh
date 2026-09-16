@@ -13,7 +13,7 @@ fi
 
 if ! "$PYTHON_BIN" -c 'import PyInstaller' >/dev/null 2>&1; then
   echo "当前环境没有 PyInstaller。请先执行：" >&2
-  echo "  $PYTHON_BIN -m pip install -r $PROJECT_DIR/requirements-build.txt" >&2
+  echo "  $PYTHON_BIN -m pip install -r $PROJECT_DIR/requirements.txt" >&2
   exit 1
 fi
 

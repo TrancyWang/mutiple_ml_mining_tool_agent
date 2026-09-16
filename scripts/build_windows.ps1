@@ -8,7 +8,7 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 }
 
 python -m pip install --upgrade pip
-python -m pip install -r requirements-windows.txt
+python -m pip install -r requirements.txt
 python scripts/create_windows_icon.py
 
 if (Test-Path build) { Remove-Item build -Recurse -Force }

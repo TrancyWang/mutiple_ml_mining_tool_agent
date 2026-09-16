@@ -1,613 +1,941 @@
 # Academic Agent
 
-Academic Agent 是一个面向文本挖掘、机器学习、数据分析、可视化和文档问答的桌面 Agent 应用。客户端使用 PySide6，模型适配层使用 Qwen-Agent，底层能力通过注册工具统一暴露。
+Academic Agent 是一个基于 PySide6 的桌面 Agent 应用，面向文本挖掘、机器学习、数据分析、可视化、文档问答和项目工作区操作。
 
-本项目当前的核心编排方式是：
+项目的核心原则是：大模型负责理解需求、规划步骤和解释结果；程序负责参数校验、工具权限、算法计算、任务状态和文件操作确认。
 
-```text
-Routing（能力路由与意图聚焦）
-        ↓
-Plan Loop（补齐关键信息并形成可审阅的 Plan）
-        ↓
-Plan → Dynamic Task Board（把计划转换成带验收标准的任务板）
-        ↓
-Convergence Loop（逐任务执行、检查、重试、收敛）
-        ↓
-Deterministic Assembly（只拼装已完成任务的结果）
+> 重要：本项目当前是桌面应用，不是已经部署好的 Web API 服务。用户下载代码后，需要在本机安装依赖、配置大模型服务和本地算法模型，再启动 Qt 客户端。
+
+面向最终用户的完整操作流程请阅读：[用户使用文档](USER_GUIDE.md)，其中包含首次登录、普通用户“注册”说明、云端模型配置、Ollama、本地 BERT/BGE 模型目录和常见问题。
+
+## 文档导航
+
+- [项目架构](#项目架构)：分层结构、模块职责和依赖方向
+- [核心运行流程](#核心运行流程)：从启动、登录、输入问题到结果回传
+- [典型任务流程](#典型任务流程)：文本聚类、情感分析、机器学习、项目代码和文档 RAG
+- [Work 与 Chat 的实现差异](#work-与-chat-的实现差异)：两种模式的权限和执行边界
+- [用户使用文档](USER_GUIDE.md)：注册登录、模型配置和面向最终用户的操作步骤
+
+## 界面预览
+
+### 主界面
+
+![Academic Agent 主界面](docs/screenshots/main-window.png)
+
+### 登录窗口
+
+![Academic Agent 登录窗口](docs/screenshots/login-dialog.png)
+
+### 本地模型配置
+
+![Academic Agent 模型配置页面](docs/screenshots/model-settings.png)
+
+### 文本聚类执行过程
+
+![文本聚类执行过程](docs/screenshots/cluster-progress.png)
+
+### 文本聚类结果与输出文件
+
+![文本聚类结果与输出文件](docs/screenshots/cluster-result.png)
+
+以上截图由项目当前 PySide6 界面实际启动并渲染，后两张为项目实际运行过程截图，不是静态示意图。
+
+## 功能概览
+
+| 模块 | 能力 |
+| --- | --- |
+| 数据分析 | CSV、Excel、JSON、文本文件加载，数据概览、统计分析、缺失值和重复值处理 |
+| 文本挖掘 | 文本预处理、文本聚类、情感分析、关键词提取、实体识别、关系抽取 |
+| 机器学习 | 回归、分类、因果推断、特征处理和结果指标生成 |
+| 可视化 | 词云、聚类分布图、情感分布图、折线图等 |
+| 文档问答 | PDF、Markdown、TXT、DOCX、CSV、JSON 文档解析、混合检索和引用证据 |
+| 工作区 | 检索、读取、生成、编辑和删除项目文件；写入类操作支持预览和确认 |
+| Agent 编排 | Routing → Plan → Task Board → 执行 → 验收 → 重试/重规划 → 结果汇总 |
+| 模型服务 | Gemini、通义千问（新加坡/北京）和 Ollama；可在客户端切换 |
+
+## 项目架构
+
+### 设计定位
+
+Academic Agent 不是把所有事情交给大模型的聊天机器人，而是一个由程序控制执行边界、由模型辅助理解和规划的本地桌面 Agent。系统把“理解需求”和“执行动作”拆开：
+
+| 责任方 | 负责内容 | 不负责内容 |
+| --- | --- | --- |
+| 大模型 | 理解自然语言、判断当前关注点、生成 Plan、补充解释、选择候选算法 | 不直接决定工具权限、不绕过用户确认、不替用户猜缺失字段 |
+| 本地 Planner / Runtime | 路由、Plan 生命周期、任务顺序、状态转换、重试、重规划和终止 | 不替代具体算法计算 |
+| Algorithm Scheduler | 根据当前允许的工具提出算法顺序和参数 | 不执行未授权工具，不把工作区写入工具纳入算法调度 |
+| Tool Executor / Policy | 检查工具是否注册、当前任务是否允许、参数和路径是否安全 | 不依赖系统提示词作为唯一安全边界 |
+| 数据与算法模块 | 加载数据、预处理、BERT/BGE 推理、机器学习计算、图表和文件产物 | 不负责解释用户意图 |
+| Qt 界面 | 登录、上传、确认 Plan、显示进度、展示结果和文件 | 不在主线程执行耗时模型或算法计算 |
+
+因此，模型输出即使格式错误、提出了不存在的工具或缺少字段，程序仍会经过本地校验和安全兜底；模型不能单独扩大当前任务的能力范围。
+
+### 总体分层
+
+```mermaid
+flowchart TB
+    User[用户]
+
+    subgraph Presentation[表示层 PySide6]
+        MainWindow[CodexChatWindow<br/>主窗口与界面状态]
+        Mixins[chat/file/model/workspace/feature mixins]
+        Worker[StreamWorker<br/>QThread 后台线程]
+        Dialogs[Login / Plan / 参数确认窗口]
+    end
+
+    subgraph Application[应用控制层]
+        AppController[ApplicationController]
+        State[ApplicationState<br/>用户、模式、会话、模型服务]
+        Controllers[AuthController / AgentController<br/>ProjectController / SessionController]
+    end
+
+    subgraph Agent[Agent 编排层]
+        Service[AgentService<br/>Qwen-Agent 适配]
+        Runtime[AgentRuntime<br/>Plan Loop + Task Board + Convergence Loop]
+        Planner[TaskPlanner + SkillCatalog<br/>能力路由与工具白名单]
+        Context[AgentContextBuilder + MemoryCoordinator<br/>上下文与历史记忆]
+        Scheduler[Algorithm Scheduler<br/>算法计划规范化]
+        Verifier[TaskVerifier + Reflection<br/>验收、重试、重规划]
+    end
+
+    subgraph Execution[工具执行层]
+        Executor[ToolExecutor]
+        Policy[AgentPolicy<br/>ExecutionScope 权限检查]
+        Registry[ToolRegistry / Builtin Tools]
+        Handlers[Data / Mining / ML / Viz / RAG / Project handlers]
+    end
+
+    subgraph Domain[算法与基础设施]
+        Algorithms[algorithms/ 与 tools/<br/>预处理、文本挖掘、机器学习、可视化]
+        LocalModels[BERT / BGE 本地模型]
+        RAG[文档解析、切分、索引、混合检索]
+        Workspace[WorkspaceManager<br/>路径边界、.gitignore、写入预览]
+        Persistence[SQLite / Chroma / Milvus Lite / Elasticsearch]
+        Artifacts[output/ 与工作区 output/<br/>CSV、Excel、图片、报告]
+    end
+
+    User --> MainWindow
+    MainWindow --> Mixins
+    Mixins --> Worker
+    Dialogs --> AppController
+    AppController --> State
+    AppController --> Controllers
+    Worker --> Service
+    Service --> Runtime
+    Runtime --> Planner
+    Runtime --> Context
+    Runtime --> Scheduler
+    Runtime --> Verifier
+    Runtime --> Executor
+    Executor --> Policy
+    Executor --> Registry
+    Registry --> Handlers
+    Handlers --> Algorithms
+    Handlers --> LocalModels
+    Handlers --> RAG
+    Handlers --> Workspace
+    Handlers --> Artifacts
+    Context --> Persistence
+    Workspace --> Persistence
+    Workspace --> Artifacts
+    Runtime --> MainWindow
 ```
 
-这套设计解决的是“一次生成一大段答案”的几个常见问题：模型过早执行、关键信息靠猜、复杂任务中途失控、任务完成标准不明确，以及失败后只能整段重做。
-
-## 一、系统分层架构（当前实现）
-
-这不是一个“模型直接接管整个应用”的单体 Agent，而是一个由 Qt 客户端、应用控制层、Agent 编排层、模型适配层、能力工具层和基础设施层组成的分层系统。每一层都有明确边界：模型负责理解和生成，程序负责权限、状态、顺序、重试和可验证的完成条件。
-
-### 1. 从界面到基础设施的六层结构
+### 目录与模块职责
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│ Presentation：PySide6 客户端                                  │
-│ qt_client.py / views / StreamWorker / 内嵌 Plan 操作卡片       │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ 用户操作、进度事件、流式结果
-┌──────────────────────────────▼───────────────────────────────┐
-│ Application Control：应用控制层                               │
-│ ApplicationController / AgentController / SessionController   │
-│ ProjectController / AuthController / ApplicationState         │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ AgentRequest、会话和配置
-┌──────────────────────────────▼───────────────────────────────┐
-│ Agent Orchestration：模型驱动但由程序控状态的编排层            │
-│ AgentRuntime / TaskPlanner / Plan Loop / TaskBoard             │
-│ TaskVerifier / Reflection / Replan / ExecutionScope            │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ 规划调用、执行调用、结构化事件
-┌──────────────────────────────▼───────────────────────────────┐
-│ Model Adapter：模型适配层                                     │
-│ AgentService / chat_agent / planning_agent / Provider Config  │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ 受限工具调用
-┌──────────────────────────────▼───────────────────────────────┐
-│ Capability：业务能力层                                        │
-│ Tool Registry / Tool Handlers / Tools / Services / Algorithms  │
-│ RAG 检索、文本挖掘、机器学习、数据分析、可视化、项目操作        │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ 文件、数据库、模型、向量索引
-┌──────────────────────────────▼───────────────────────────────┐
-│ Infrastructure：基础设施层                                   │
-│ Workspace / Auth Store / SQLite Repositories / Artifacts       │
-│ Memory Stores / Data Profiler / Document Generator / Paths     │
-└──────────────────────────────────────────────────────────────┘
+qt_client.py                         # Qt 启动入口、缓存目录、单实例锁
+academic_agent/
+├── views/                            # PySide6 表示层
+│   ├── main_window.py                # 主窗口、登录、项目和 Agent 生命周期
+│   ├── main_layout.py                # 左侧项目、中间对话、底部输入框、右侧文件区
+│   ├── chat_mixin.py                 # 发送消息、上传文件、进度事件、结果渲染
+│   ├── workers.py                    # StreamWorker，避免阻塞 Qt 主线程
+│   ├── auth.py                       # 登录窗口和 API Key 输入
+│   ├── dialogs.py                    # Plan、算法参数、依赖和确认窗口
+│   ├── model_mixin.py                # BERT/BGE 模型目录选择和检查
+│   └── settings_window.py            # 模型、账户、权限、存储和外观设置
+├── controllers/                      # 应用用例和生命周期
+│   ├── application.py                # 组合各 Controller
+│   ├── auth.py                       # 本地认证、.env 和模型凭据应用
+│   ├── agent.py                      # Agent 初始化、重置和模型服务切换
+│   ├── projects.py                   # 项目注册、切换和删除
+│   └── sessions.py                   # 会话列表、加载和删除
+├── models/                           # 与 Qt 无关的应用状态和数据模型
+├── agent/                            # Agent 核心
+│   ├── adapters/qwen.py              # Qwen-Agent、Gemini 和工具包装器
+│   ├── runtime.py                    # 全部运行时编排逻辑
+│   ├── planning/planner.py           # 本地能力路由
+│   ├── planning/algorithm_scheduler.py # 算法计划白名单与参数校验
+│   ├── orchestration/                # Plan Loop 和 TaskVerifier
+│   ├── tooling/                      # 工具注册、执行器和业务 handler
+│   ├── policies/                     # 工具访问策略
+│   ├── context.py                    # 文件、记忆、Plan 和用户确认信息组装
+│   ├── session.py                    # 当前会话上传文件、任务和产物
+│   └── memory/                       # 短期、长期和语义记忆协调
+├── tools/                            # 稳定的业务工具接口和算法适配
+├── algorithms/                       # 预处理、文本挖掘、机器学习和可视化实现
+├── rag/                              # 文档解析、索引、检索和表格分析
+├── integrations/                     # 外部文本算法源项目适配器
+├── infrastructure/                   # 路径、模型、权限、存储和产物策略
+└── repositories/                     # SQLite 会话和项目仓储
 ```
 
-| 层次 | 当前职责 | 主要代码位置 | 明确不负责的事情 |
-| --- | --- | --- | --- |
-| Presentation | 展示聊天、上传、登录、模式切换、Plan 审批、任务进度和产物 | `qt_client.py`、`academic_agent/views/` | 不决定路由、任务状态或工具权限 |
-| Application Control | 组合应用用例，管理当前窗口状态、登录、项目、会话和 Agent 生命周期 | `academic_agent/controllers/`、`academic_agent/models/state.py` | 不把 Qt 控件传入 Agent 核心 |
-| Agent Orchestration | 执行 Routing → Plan → Task Board → Convergence，维护状态迁移、审批、重试、Reflection 和有限重规划 | `academic_agent/agent/runtime.py`、`orchestration/`、`planning/`、`types.py` | 不把模型的自然语言当成程序状态 |
-| Model Adapter | 管理 Qwen-Agent 和其他 Provider 的配置，区分聊天模型、规划模型和主执行模型 | `academic_agent/agent/adapters/`、`providers/` | 规划模型不读取文件、不调用业务工具 |
-| Capability | 暴露可执行的文本挖掘、机器学习、数据分析、可视化、RAG 和工作区操作 | `agent/tooling/`、`tools/`、`application/services/`、`algorithms/`、`rag/` | 不自行绕过任务级工具作用域 |
-| Infrastructure | 提供认证存储、SQLite、文件工作区、产物目录、记忆/向量存储、依赖和模型路径 | `academic_agent/infrastructure/`、`repositories/` | 不决定用户意图和 Plan 内容 |
-
-### 2. 一次请求经过哪些对象
+模块之间的依赖方向是：
 
 ```text
-qt_client.main
-  → CodexChatWindow
-  → StreamWorker
-  → AgentService.chat_stream
-  → AgentRuntime.stream
-  → TaskPlanner（本地能力路由）
-  → planning_agent（语义 Routing / Plan Review / 拆任务 / 验收 / Reflection）
-  → plan_review_callback（执行方式：请求批准 / 帮我批准）
-  → TaskBoard + ExecutionScope
-  → 主执行 Agent + ToolExecutor + 业务工具
-  → TaskVerifier
-  → 任务重试 / Reflection / 最多一次 Replan
-  → completed 任务结果的确定性组装
-  → Qt 进度事件和最终回复
+views → controllers → agent runtime → tool registry/handlers
+                                      → tools/algorithms/rag/infrastructure
+repositories/infrastructure ← controllers/agent runtime
 ```
 
-这里有一个重要的分支：
+`views` 不应该直接调用具体算法；具体算法也不应该依赖 Qt 控件。这样同一套 Planner、Runtime、ToolExecutor 和安全策略可以被测试或其他客户端复用。
 
-- `Work` 模式进入完整的编排链路，允许在审批后使用任务级工具。
-- `Chat` 模式设置 `chat_only=true`，走独立的 `chat_agent`，直接进行自然语言对话，不进入 Plan Review、任务板和工具执行。
-- `上传文件` 是客户端输入链路，不是模型自己发现文件：用户先选文件，客户端确认登录后调用数据加载/画像，再把文件绑定到 `SessionContext`。
-- `登录` 由 `AuthController` 和 `LoginDialog` 管理；访客可以先浏览界面和选择文件，需要真正初始化 Agent 或执行受保护能力时再完成认证。
+## 核心运行流程
 
-### 3. 当前系统的核心状态对象
+### 1. 启动与初始化流程
 
-| 对象 | 生命周期 | 保存内容 | 谁可以修改 |
-| --- | --- | --- | --- |
-| `ApplicationState` | 当前 Qt 窗口 | 登录态、用户、模式、模型 Provider、当前会话 ID、消息和确认过的操作 | Controller 和界面适配层 |
-| `SessionContext` | 当前 Agent 会话 | 上传文件、文件画像、确认信息、Plan 文书、Plan trace、任务板和产物 | `SessionStore`、Runtime 的会话同步逻辑 |
-| `AgentPlan` | 一次 Work 请求 | 路由、重点、可用工具、预期产物、确认信息、Plan 文书 | Planner/Plan Loop 生成，程序通过 `replace` 更新 |
-| `TaskBoard` / `TaskItem` | 一次 Work 请求的执行期 | 任务依赖、状态、尝试次数、反馈、证据、结果 | 程序状态机；模型只能提议任务字段 |
-| `ExecutionScope` | 当前执行作用域 | 当前任务 ID、允许工具、工具观察、结构化事件 | Runtime 和 ToolExecutor |
-| Repository / Store | 应用持久化或运行期 | 对话、项目、认证、记忆、向量索引、文件产物 | 对应基础设施组件 |
+`python qt_client.py` 启动后依次完成：
 
-因此，项目的“控制面”和“执行面”是分开的：Plan、任务板、审批、重试和事件属于控制面；主 Agent 调用工具、生成分析结果和写出产物属于执行面。
+1. `configure_numeric_runtime()` 设置 NumPy、PyTorch 等数值运行时的线程和安全选项。
+2. 设置 macOS Qt 图层、Matplotlib 和 XDG 可写缓存目录。
+3. 读取 Qt `QSettings` 中已经保存的本地模型路径和存储设置。
+4. 创建统一的 `output/` 和用户可写运行时目录。
+5. 创建系统临时目录中的单实例锁，避免重复打开多个客户端进程。
+6. 以访客状态显示主窗口；真正使用 Agent、数据和项目工具时再要求登录。
+7. 登录成功后，`AuthController` 应用模型服务凭据，`AgentController` 初始化 `AgentService`。
+8. 通过 `StreamWorker` 在后台线程运行后续模型和算法任务，Qt 主线程只负责界面响应。
 
-## 二、核心编排设计
+### 2. 用户输入到 Agent 的流程
 
-### 1. Routing：先确定能力边界，再判断讨论重点
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant UI as Qt 主窗口
+    participant W as StreamWorker
+    participant S as AgentService
+    participant R as AgentRuntime
+    participant P as TaskPlanner
+    participant M as Planning Assistant
+    participant E as ToolExecutor
+    participant V as TaskVerifier
+    participant DB as Session/Memory/SQLite
 
-Routing 分成两个互补部分：
+    U->>UI: 输入问题、上传文件、选择 Work/Chat
+    UI->>UI: 检查登录状态，创建 AgentRequest
+    UI->>W: 启动后台线程
+    W->>S: chat_stream(messages, user_id, session_id, workspace_path)
+    S->>R: runtime.stream(request, model_runner, semantic_runner)
+    R->>P: 本地路由和可用工具计算
+    R->>DB: 读取上传文件、会话和相关历史记忆
+    alt Work 模式
+        R->>M: Routing focus / Plan Review / Plan Document
+        M-->>R: JSON 规划结果或信息缺口
+        R->>UI: 请求补充信息或确认 Plan
+        UI-->>R: 用户选择或批准
+        R->>M: 算法调度和任务拆分
+        M-->>R: 经过本地校验的候选任务
+        R->>E: 按 TaskBoard 顺序执行允许的工具
+        E-->>R: 结构化结果、日志和产物路径
+        R->>V: 验收当前任务
+        V-->>R: 通过、重试或重规划
+    else Chat 模式
+        R->>S: 使用无工具的 Chat Assistant
+        S-->>R: 自然语言回答
+    end
+    R->>DB: 保存消息、任务板、计划轨迹和记忆
+    R-->>W: 进度事件与最终结果
+    W-->>UI: 更新步骤、日志和文件链接
+    UI-->>U: 展示回答和分析产物
+```
 
-1. `TaskPlanner` 做本地确定性路由。它根据请求把任务归入 `document`、`visualization`、`machine_learning`、`project`、`data` 或 `chat`，并根据技能目录和工具注册表生成允许使用的工具集合。
-2. Work 模式下，规划模型再做一次语义 Routing，只负责回答“用户当前最关注什么”，例如结果质量、业务解释、技术实现或可复现性。语义 Routing 不能扩大本地已经确定的工具权限，也不能调用工具。
+### 3. `AgentRequest` 是一次任务的边界
 
-因此，模型可以理解重点，但不能通过自然语言自行越过项目的能力边界。
-
-### 2. Plan Loop：先补充必要信息，再写计划书
-
-Plan Loop 不生成最终答案，也不执行工具。规划模型每轮检查：
-
-- 用户目标是否清楚；
-- 最终交付物是什么；
-- 是否缺少会改变方案方向的关键信息；
-- 哪些细节可以采用低风险、可逆的默认假设。
-
-在 Work 模式下，如果本地路由判断不出明确的学术方向，程序会先发起一轮确定性的学术意图澄清，只提供文本挖掘、机器学习、数据分析与可视化、学术文献与研究四类选项。这样“帮我分析一下”不会直接进入通用 Chat，也不会让模型自行选择一个无边界的工具流程；Chat 模式则保留普通自然语言问答能力。
-
-如果缺少信息，模型返回 `information_frame`。程序会给每个缺口分配稳定编号，例如 `R1-F1`，每轮最多展示 3 个问题，并跳过已经确认过的问题。Qt 客户端通过交互卡片收集答案，答案会进入当前会话的 `confirmed_information`，后续规划和执行都可以使用。
-
-信息补充现在以内嵌卡片呈现，而不是突然弹出输入框。卡片会同时展示“为什么需要这项信息”、建议回答格式、示例，并把候选答案做成可点击选项；用户不需要猜 Agent 想要什么，也不需要自由输入长文本。
-
-如果信息已经足够，模型返回 `plan_ready=true`，然后单独生成一份自然语言 Markdown Plan。Plan 说明目标、边界、实施顺序和完成条件，但不等于最终产物。
-
-`Plan Review` 是规划模块的内部输出契约，不是给用户填写的业务问题。它只负责判断信息是否足够：要么返回 `plan_ready=true` 和空的 `information_frame`，要么返回真正影响方案方向的业务缺口及可点击选项。如果模型误把 JSON、`information_frame` 或 “Plan Review 输出结构”当成缺口，Runtime 会自动要求模型修复一次；不会把这类内部字段展示成“补充信息”。连续两次仍不符合结构时，Runtime 会保留具体原因，并回退到不新增用户约束的本地安全 Plan，不让一次模型格式波动阻断整条任务链路。
-
-当前 Work 模式会在对话输入区一开始就展示“执行方式”下拉框，位置紧挨模型按钮。用户可以在发送消息前选定本次任务的执行方式；Plan 详情卡片只负责展示目标、任务和完成标准，不再承载“请求批准 / 帮我批准”入口，也不会弹出模态审批窗口：
-
-- `请求批准`：进入人工确认模式。Plan 卡片提供“确认执行计划”，算法配置由用户选择，关键信息缺口由用户点选，失败重规划也会再次等待确认。
-- `帮我批准`：进入全自动模式。Plan、信息澄清和重规划自动继续；支持算法调度的数据、文本挖掘、机器学习和可视化任务由 LLM 根据目标和数据上下文选择算法，不在算法节点停下来等待用户。
-
-文件生成、修改和删除仍保留原有操作确认；“帮我批准”只自动化 Agent 的规划和执行流程，不扩大文件操作权限。
-
-对核心分析方法也采用同样的边界：用户只说“做聚类”时，人工流程会要求选择 KMeans、层次聚类或 DBSCAN；用户只说“做机器学习”时，会先选择回归、分类或因果推断，再选择对应模型/方法。人工请求批准不会默认替用户勾选推荐算法；全自动模式下由 LLM 调度器提出算法选择，程序负责校验和执行。
-
-### 当前机器学习与信息抽取能力
-
-- 分类：SVM、Logistic 回归、随机森林、ExtraTrees、Gradient Boosting、KNN、朴素贝叶斯。
-- 回归：原有线性、Ridge、随机森林、GBDT、AdaBoost、XGBoost、LightGBM、CatBoost，另补充 ElasticNet、Huber、ExtraTrees、KNN。
-- 表格特征：新增分类/回归适配器支持数值列和类别列，训练集内完成缺失值填充、独热编码和标准化，避免测试集信息泄漏；原有 SVM 入口保持兼容。
-- 文本信息抽取：新增大模型实体识别和关系抽取，兼容 Gemini、Qwen、Ollama 以及其他 OpenAI-compatible 接口；输出实体类型、字符位置、置信度、主语-谓语-宾语三元组和 Excel 结果。
-
-支持算法调度的数据、文本挖掘、机器学习和可视化路由都包含一个算法工具调度阶段：规划模型根据用户目标、已确认信息和本地可用工具目录返回结构化 `tasks`，程序只接受当前 Plan 允许的工具，并按任务顺序直接执行已经补齐参数的算法；参数不完整时退回主 Agent 补参。算法结果完成后，模型只负责解释结构化观察，不负责替代算法计算。调度计划和算法选择理由会通过 `algorithm_schedule_created` 事件记录。
-
-信息抽取默认复用应用的 `LLM_PROVIDER` 配置，也可以通过 `LLM_EXTRACTION_PROVIDER`、`LLM_EXTRACTION_MODEL`、`LLM_EXTRACTION_BASE_URL` 和 `LLM_EXTRACTION_API_KEY` 单独指定服务。没有可用的 LLM 服务时，工具会返回明确错误，不会用模型臆造结果。
-
-客户端底部的“上传文件”入口适用于 Work 和 Chat 两种模式。它会先打开单文件选择器，用户选中文件后才检查登录状态；因此未登录时也不会先被登录窗口挡住。选择器支持常见表格、文本、PDF、Word、PPT、图片、音频和视频格式，并提供“所有文件”选项。文件被确认后会绑定到当前会话，后续 Agent 可以把它作为用户明确提供的分析输入。
-
-未登录时，左侧账户区直接显示“登录账户”，不再要求用户从 `···` 菜单里猜入口。登录窗口会根据用户名提示管理员和普通用户分别需要填写的内容，按回车也可以提交登录。
-
-### 3. Plan → Dynamic Task Board：语义拆分，状态由程序接管
-
-确认 Plan 后，规划模型通过第二次独立调用把 Plan 拆成任务清单。每个任务必须包含：
+一次请求由 `academic_agent.agent.types.AgentRequest` 描述，核心字段包括：
 
 | 字段 | 含义 |
 | --- | --- |
-| `task_title` | 面向用户的任务名称 |
-| `task_goal` | 这一项具体要解决的问题 |
-| `deliverable` | 当前任务应该产出的结果槽位 |
-| `done_when` | 可以检查的完成条件 |
+| `messages` | 当前会话消息列表，最后一条用户消息是本轮问题 |
+| `user_id` | 当前本地用户，用于隔离会话和记忆 |
+| `session_id` | 当前对话 ID，用于保存上传文件、任务板和产物 |
+| `workspace_path` | Work 模式当前项目工作区路径；Chat 模式为空 |
+| `chat_only` | 是否只允许自然语言对话 |
 
-Plan 阶段的信息缺口必须带有可点击的 `options`，每项包含 `label`、`value` 和可选的 `description`。例如：
+上传文件通过 `SessionContext.uploaded_files` 和 `schema` 进入上下文。上传文件是用户明确授权的分析输入，即使它位于工作区之外也可以被读取；但它不会因此变成可任意修改的项目文件。
 
-```json
-{
-  "topic": "会议工具",
-  "question": "你希望使用哪种线上会议工具？",
-  "options": [
-    {"label": "腾讯会议", "value": "腾讯会议", "description": "适合当前团队的线上会议"},
-    {"label": "飞书会议", "value": "飞书会议", "description": "适合需要协作文档的会议"}
-  ]
-}
-```
+### 4. 路由与能力白名单
 
-模型只负责提供这些语义字段。程序负责补充和维护：
+`TaskPlanner` 先根据用户问题选择一个主路由，并从 `SkillCatalog` 生成当前路由允许的工具集合：
 
-- 稳定任务 ID：`T1`、`T2`、`T3`……；
-- 初始状态：`ready`；
-- 依赖关系；
-- 当前尝试次数 `attempts`；
-- 最大尝试次数 `max_attempts`；
-- 检查反馈 `feedback`；
-- 工具观察证据 `evidence`；
-- 生成结果和产物路径。
+| 路由 | 典型问题 | 主要工具范围 |
+| --- | --- | --- |
+| `chat` | 解释概念、讨论思路 | 不注册任何工具 |
+| `document` | 阅读 PDF、Markdown、DOCX 并带引用回答 | `document_rag` |
+| `data` | 数据概览、统计、预处理、文本挖掘 | `profile_data`、`load_data`、`data_statistics`、`text_clustering` 等 |
+| `machine_learning` | 回归、分类、因果推断 | `data_preprocess`、`feature_processing`、`regression` 等 |
+| `visualization` | 词云、聚类图、情感图、折线图 | `wordcloud`、`cluster_plot`、`sentiment_plot`、`line_chart` |
+| `project` | 查找、读取、生成、编辑项目代码 | `list_project_files`、`read_project_file`、`write_project_file` 等 |
 
-模型不能直接把任务标记为 `completed`，也不能修改任务 ID、尝试次数或程序状态。这样可以防止“模型自己说完成了”被误认为真正完成。
-如果任务拆分结果提供 `suggested_tools`，程序会先过滤到本地 `available_tools` 范围内，再把它作为当前任务的工具作用域；任务不会因为主模型临时改变想法而随意调用其他任务的工具。
+路由先由本地规则保证基本能力边界，再由语义规划模型补充本轮重点。模型可以说明“为什么做”，但不能通过自然语言输出把未授权工具加入 `available_tools`。
 
-### 4. Convergence Loop：一次只执行当前任务
+对于 Work 模式中的“帮我分析一下”等模糊请求，Runtime 会先询问“文本挖掘、机器学习、数据分析或学术文献”等方向，再继续规划；不会把一个没有目标的请求直接变成无限范围的任务。
 
-Scheduler 每次只从任务板选择第一个满足依赖的 `ready` 任务。主 Agent 收到的执行上下文只包含：
+### 5. Plan Loop：补齐信息并生成可审阅计划
 
-- 当前任务；
-- 已确认的 Plan；
-- 用户已经确认的信息；
-- 已完成任务的结果；
-- 当前任务上一次失败时的 `feedback`；
-- 当前任务实际产生的工具观察结果。
+当请求进入 Work 模式后，`AgentRuntime._plan_loop()` 会让没有工具权限的 Planning Assistant 判断信息是否足够：
 
-执行完成后，规划模型作为无工具检查模块返回：
+1. 读取当前用户问题、路由、可用工具、上传文件结构和已经确认的信息。
+2. 如果缺少会改变执行方向的字段，返回一个信息缺口，例如文本列、目标变量、特征列或处理变量。
+3. 界面把缺口渲染成选项，用户选择后写入 `confirmed_information`。
+4. 最多逐轮补充必要信息，避免重复询问已经确认的内容。
+5. 信息完整后生成自然语言 Plan，说明目标、产物、执行顺序、边界和完成标准。
+6. 用户在界面中选择批准或取消；取消则本次任务不执行。
 
-```json
-{
-  "passed": true,
-  "feedback": "通过的依据，或下一次重试需要补齐的缺口"
-}
-```
+Plan 是“怎么做”的计划书，不是最终分析报告。Plan 生成阶段不调用数据、文件或项目工具，避免规划过程产生副作用。
 
-程序根据这个结果做确定性状态迁移：
+### 6. 算法调度：模型提出，程序校验并执行
 
-```text
-ready → running → verifying → completed
-                         └──→ ready（仍有重试次数）
-                         └──→ blocked（达到最大尝试次数）
-```
+对数据、文本和机器学习任务，`algorithm_scheduler.py` 会把当前 `available_tools` 中的确定性算法描述给 Planning Assistant。模型可以提出：
 
-当前默认每个任务最多尝试 2 次。失败时只重做当前任务，不回滚已经完成的任务；达到上限后阻塞任务板，并在最终结果中明确说明未完成原因。
-对于文本聚类，工具还会返回完整的 `cluster_distribution` 和 `cluster_profiles`。程序优先用这些结构化证据核对簇数量、分布和代表文本，不会因为主模型输出过长导致自然语言表格截断，就误判底层聚类失败。
+- 工具顺序，例如 `data_preprocess → feature_processing → regression`；
+- 算法，例如 `xgboost`、`kmeans` 或 `dbscan`；
+- 参数，例如 `text_column`、`target_var`、`feature_vars`、`n_clusters`。
 
-文本聚类还有一层独立的数值安全边界。客户端启动时会关闭 tokenizer 并行，并将 BLAS、OpenMP、NumExpr 和 PyTorch 的计算线程限制为 1，避免模型线程池在进程切换后产生死锁或竞争。真正的 BGE 向量编码和 KMeans/Agglomerative/DBSCAN 计算默认放在 `spawn` 子进程中：适配层只复用源项目的 `TextEmbedding` 生成向量，再对向量做二维、行数、非有限值检查和稳定归一化，随后由本项目的 sklearn 适配层执行聚类，不再进入源项目中容易触发原生矩阵崩溃的 KMeans 路径。这样即使底层 NumPy/BLAS 发生 SIGSEGV，主 Qt 界面也不会随之退出，而是把子进程异常转换为普通的“聚类失败”反馈，保留会话和重规划能力。
+之后由 `normalize_algorithm_schedule()` 本地规范化：
 
-默认的安全隔离不需要用户配置。仅在诊断或基准测试时，才可以设置 `ACADEMIC_AGENT_DISABLE_CLUSTER_ISOLATION=1` 临时关闭子进程隔离；如果确实需要测试并行数值库，可设置 `ACADEMIC_AGENT_ALLOW_PARALLEL_NUMERICS=1`，日常使用不建议开启。子进程最长运行时间由 `ACADEMIC_AGENT_CLUSTER_TIMEOUT` 控制，默认 1800 秒，超时会被安全停止并返回可读错误。
+1. 只接受已经注册且属于 `SCHEDULABLE_TOOLS` 的工具。
+2. 每个调度任务只对应一个工具。
+3. 检查必需参数是否存在；缺少的字段交给后续模型补充，不由程序猜列名。
+4. 用户在参数窗口确认的算法和参数优先，模型不能偷偷替换。
+5. 工作区写入、编辑和删除工具不进入算法调度集合。
+6. 默认最多处理 12 个调度任务；Task Board 另有最多 50 个任务的安全限制。
+7. 如果模型输出格式不符合约定，保留本地安全兜底路径，不伪造用户没有提供的参数。
 
-### 5. Reflection：允许任务板动态变化
+调度结果写入 `AgentPlan.algorithm_schedule`，但它仍然不是权限。真正执行时，Runtime 还会把任务绑定到当前 `ExecutionScope.allowed_tools`，再次由 `ToolExecutor` 和 `AgentPolicy` 检查。
 
-每个任务检查后，规划模型还可以做一次轻量 Reflection：
+### 7. Task Board：把计划变成可观察状态
 
-- `continue`：按当前任务板继续；
-- `add_tasks`：根据新发现增加最多 5 个后续任务；
-- `replan_plan`：指出整体目标或范围发生变化，请求重新规划，但不会自行修改原 Plan。
+`TaskBoard` 保存任务状态和依赖关系，每个 `TaskItem` 包含：
 
-新增任务仍由程序分配 `Tn` 编号、初始状态和依赖关系。当前版本已经支持安全增加后续任务，并在 UI 中显示 `task_board_updated`。
+- 任务 ID、标题和目标；
+- `suggested_tools`、`scheduled_tool` 和已规范化参数；
+- 依赖任务；
+- 交付物和 `done_when` 完成标准；
+- 当前状态、尝试次数、反馈、证据和产物路径。
 
-当任务达到最大重试次数，Runtime 会把失败反馈、失败任务和已完成结果重新送入 Plan Loop，重新生成 Plan 和任务板，再继续执行。人工模式会再次请求用户批准，全自动模式会自动批准新的 Plan；当前最多重规划 1 次，避免失败后无限循环。
-
-## 三、端到端执行时序
-
-以“帮我出一份 6 人产品小组的线上用户访谈复盘会方案”为例，Work 模式的典型过程如下：
+任务状态通常按以下顺序变化：
 
 ```text
-用户请求
-  ↓
-本地 Routing：确定这是项目/文档/数据类任务及可用能力
-  ↓
-语义 Routing：提取本次最关注的重点
-  ↓
-Plan Review：发现“业务目标、线上工具”等关键缺口
-  ↓
-Qt 询问，每轮最多 3 个问题
-  ↓
-用户确认：分析购物车功能卡点，使用腾讯会议
-  ↓
-生成自然语言 Plan，用户确认执行方向
-  ↓
-Plan-to-Task：生成“目标背景 / 会议议程 / 工具准备”等任务
-  ↓
-执行 T1 → 检查 → 完成
-执行 T2 → 检查发现缺少时间分配 → feedback → 重试 → 完成
-执行 T3 → 检查 → 完成
-  ↓
-只拼装 T1、T2、T3 的 completed 结果
+READY → RUNNING → VERIFYING → COMPLETED
+                         ├──→ READY       （仍有重试次数）
+                         └──→ BLOCKED     （达到尝试上限）
+
+READY → WAITING_USER      （等待信息、Plan 或算法参数）
 ```
 
-Plan 文书和最终会议方案是两份不同的内容：前者是用户确认的执行蓝图，后者是所有任务通过验收后由程序组装出来的交付结果。
+Task Board 只让没有未完成依赖的任务进入执行。界面收到 `task_started`、`tool_started`、`task_checked`、`task_completed` 等事件后，实时更新中间区域的执行步骤和运行日志。
 
-## 四、代码结构
+### 8. ToolExecutor：所有工具调用的统一闸门
+
+所有内置工具先在 `academic_agent/agent/tooling/builtins.py` 注册为 `ToolSpec`，再由 `ToolExecutor.execute()` 统一执行：
 
 ```text
-academic_agent/
-├── models/
-│   └── state.py                    # AgentMode、ApplicationState
-├── controllers/
-│   ├── application.py              # 组合各 Controller 和 Repository
-│   ├── agent.py                    # Agent 延迟初始化、重置、Provider 切换
-│   ├── auth.py                     # 登录、登出和认证会话
-│   ├── projects.py                 # 项目列表、激活、删除和会话隔离
-│   └── sessions.py                 # Work/Chat 会话查询、加载和删除
-├── agent/
-│   ├── adapters/qwen.py             # Qwen-Agent 适配、主 Agent 与规划 Agent
-│   ├── context.py                   # 用户文件、记忆、Plan、确认信息的上下文组装
-│   ├── executor.py                  # 工具执行、工具观察和执行作用域
-│   ├── runtime.py                   # 总运行时：Routing、Plan、任务板、收敛循环
-│   ├── response.py                  # 回复文本、确认链接和结果处理
-│   ├── session.py                   # 会话级确认信息、Plan、Trace、任务板
-│   ├── types.py                     # AgentPlan、TaskBoard、TaskItem 等数据契约
-│   ├── memory/
-│   │   ├── coordinator.py           # 跨会话记忆召回和写入协调
-│   │   └── manager.py               # 记忆管理
-│   ├── orchestration/
-│   │   ├── plan_loop.py             # 信息缺口框架、提问轮次、答案回填
-│   │   └── verifier.py              # 当前任务的语义检查和证据收集
-│   ├── planning/
-│   │   ├── planner.py               # 本地能力路由和初始 Plan 上下文
-│   │   └── configuration.py         # 文本挖掘/机器学习算法配置
-│   ├── policies/tool_access.py      # 工具访问策略
-│   ├── skills/catalog.py            # 路由到技能和工具的映射
-│   └── tooling/
-│       ├── registry.py              # 工具注册表
-│       ├── builtins.py              # 工作区等内置能力
-│       └── handlers/                # 数据、文本挖掘、ML、可视化、RAG 等处理器
-├── application/services/
-│   ├── data_service.py              # 数据读取、画像和数据类用例
-│   ├── machine_learning_service.py  # 机器学习用例编排
-│   ├── text_mining_service.py       # 文本挖掘用例编排
-│   └── visualization_service.py     # 可视化用例编排
-├── tools/                           # Agent 可调用的稳定工具入口
-│   ├── data_analysis_tools.py
-│   ├── ml_tools.py
-│   ├── text_mining_tools.py
-│   ├── viz_tools.py
-│   ├── association_tools.py
-│   ├── explainability_tools.py
-│   └── source_video_adapters.py
-├── algorithms/                      # 具体算法实现，不直接管理 Agent 状态
-│   ├── machine_learning/
-│   ├── preprocessing/
-│   ├── text_mining/
-│   └── visualization/
-├── rag/                             # 文档解析、切分、混合检索、引用证据
-│   ├── ingestion/
-│   ├── retrieval/
-│   ├── providers/
-│   ├── storage/
-│   └── analysis/
-├── repositories/
-│   ├── conversations.py              # 对话持久化仓储
-│   ├── projects.py                   # 项目持久化仓储
-│   └── sqlite_store.py               # SQLite 基础存储
-├── infrastructure/
-│   ├── workspace_manager.py          # 工作区访问、预览和待确认操作
-│   ├── auth_store.py                 # 本地认证信息存储
-│   ├── analysis_artifacts.py         # 分析产物记录
-│   ├── document_generator.py        # 文档产物生成
-│   ├── data_profiler.py              # 文件画像
-│   ├── code_executor.py              # 受控代码执行
-│   ├── dependency_manager.py        # 依赖检查和安装提示
-│   ├── model_paths.py               # 预训练模型路径
-│   ├── runtime_paths.py             # output 和运行时目录
-│   ├── runtime_safety.py            # tokenizer/BLAS/PyTorch 数值运行时保护
-│   ├── storage_config.py            # 持久化配置
-│   └── persistence/                 # Chroma / 混合向量存储
-├── views/
-│   ├── main_window.py               # 主窗口生命周期和 Controller 绑定
-│   ├── main_layout.py               # 主界面布局、模式和操作入口
-│   ├── workers.py                   # Qt 后台线程和 Plan/信息确认回调
-│   ├── chat_mixin.py                # 进度事件、任务状态和结果渲染
-│   ├── auth.py                      # 登录窗口和账号提示
-│   ├── file_mixin.py                # 文件面板与上传入口
-│   ├── workspace_mixin.py           # 工作区操作
-│   ├── model_mixin.py               # 模型选择
-│   └── dialogs.py                   # 算法参数等必要确认窗口
-├── integrations/video_text_adapter.py # 外部视频/文本适配与聚类进程隔离
-├── tests/
-│   └── test_orchestration.py        # 三阶段编排和收敛循环测试
-├── qt_client.py                     # PySide6 启动入口
-└── scripts/start_qt.sh              # 本地启动脚本
+模型或 Runtime 请求工具
+        ↓
+ToolRegistry 查找 ToolSpec
+        ↓
+ExecutionScope.allowed_tools 检查
+        ↓
+AgentPolicy 参数、模式和路径检查
+        ↓
+业务 handler 调用 tools/、algorithms/ 或 rag/
+        ↓
+记录 tool_started / tool_finished / tool_failed / tool_denied
+        ↓
+返回结构化结果给 Runtime 和当前任务
 ```
 
-核心入口有两个：
+工具调用的结果通常包含 `success`、`error`、摘要字段、指标和 `artifacts`。Runtime 会把这些观察结果放入当前任务上下文，让后续模型只处理 `current_task`，避免一次性扩展到其他任务。
 
-1. 客户端入口是 `qt_client.py`，负责启动 Qt、准备运行时目录、应用持久化配置和单实例保护，然后创建 `CodexChatWindow`。
-2. Agent 核心入口是 `AgentRuntime`。上层只需要提供 `AgentRequest`、模型调用函数和 UI 回调；运行时负责串起计划生命周期、状态迁移、工具作用域、重试、重规划和最终汇总。
+### 9. 验收、重试和重规划
 
-`ApplicationController` 是应用层的组合根：它把 `ApplicationState`、认证、项目、会话和 Agent 生命周期组合起来，但不参与具体任务的语义执行。`AgentService` 是模型适配门面：它同时维护主执行 Agent、Chat Agent 和规划 Agent，并把模型调用转换成 Runtime 能理解的回调。
+一个工具返回成功并不等于整个任务已经完成。当前任务会经过 `TaskVerifier`：
 
-## 五、模型和程序的职责边界
+1. 检查结果是否满足任务自己的 `done_when`。
+2. 优先使用结构化工具观察结果，例如行数、指标、聚类分布和产物路径。
+3. 通过则标记 `COMPLETED`，记录证据和产物。
+4. 未通过且仍有尝试次数时，将任务放回 `READY` 并携带反馈重试。
+5. 达到尝试上限后标记 `BLOCKED`。
+6. Reflection 判断是否需要新增后续任务或重新生成 Plan。
+7. 当前运行最多进入一次有限重规划；重规划仍然需要重新经过 Plan Review、参数确认和算法调度。
 
-### 规划模型
+文本聚类和情感分析的结果修复任务有单独路径：如果已有结构化标签和分布足够，程序可以调用 `repair_text_clustering` 或 `repair_sentiment_analysis` 重建结果，不必再次调用 BGE/BERT。
 
-`AgentService._get_planning_agent()` 创建一个 `function_list=[]` 的无工具 Agent。它负责：
+### 10. 结果、记忆和界面回传
 
-- Routing 的语义重点提取；
-- Plan Loop 的信息缺口判断；
-- 生成自然语言 Plan；
-- Plan 到任务板的语义拆分；
-- 当前任务验收；
-- Reflection。
+任务结束后，Runtime 会：
 
-它不读取文件、不写文件、不调用数据分析工具，也不直接执行用户任务。
+1. 汇总已完成任务的结果；
+2. 对阻塞任务说明原因和已完成部分；
+3. 追加关键结构化观察，避免长文本回答截断后丢失聚类分布等核心信息；
+4. 把产物路径写入当前 `SessionContext.artifacts`；
+5. 通过 `StreamWorker` 把结果和进度事件回传给 Qt；
+6. 将用户问题、助手回答、计划轨迹和任务板写入会话/记忆存储。
 
-### 主执行模型
+## 典型任务流程
 
-主 Agent 只在真正的任务执行阶段使用注册工具。每次执行前，`ExecutionScope` 设置当前任务的 `allowed_tools`，工具调用必须同时通过任务级作用域和既有工具访问策略。
+### 文本聚类
 
-主 Agent 必须遵守以下边界：
-
-- 只处理消息中的 `current_task`；
-- 不提前完成后续任务；
-- 不把未来现实动作描述成已经发生；
-- 缺少必要信息时指出缺口，不用虚构内容填充；
-- 文件生成、修改、删除仍沿用项目已有的预览和确认机制。
-
-### 程序控制器
-
-程序代码负责所有不应交给模型自由发挥的部分：
-
-- 路由能力边界；
-- 问题数量上限和去重；
-- Plan 是否经过用户确认；
-- 任务 ID、状态和依赖；
-- 工具作用域；
-- 尝试次数和重试上限；
-- 结果是否进入 `completed`；
-- 最终只汇总已完成结果。
-
-## 六、主要数据契约
-
-### 信息缺口
-
-规划模型的缺口项形态如下：
-
-```json
-{
-  "topic": "业务目标",
-  "why_needed": "决定复盘会议重点和输出结构",
-  "question": "这次复盘最希望解决什么业务问题？",
-  "status": "missing"
-}
+```text
+上传 CSV/Excel
+  → profile_data / load_data
+  → 确认文本列，例如 content
+  → preprocess_text
+  → 外部源项目加载 BGE 向量模型
+  → 生成文本向量
+  → KMeans / Agglomerative / DBSCAN 聚类
+  → 生成 cluster_label、cluster_distribution、cluster_profiles
+  → 输出 CSV/Excel，必要时生成 cluster_plot
+  → TaskVerifier 检查每个主题簇是否都有结果
+  → UI 展示过程、摘要和结果文件
 ```
 
-程序补充：
+文本聚类依赖 `bge-cn`，但 BGE 只负责向量表示，聚类算法本身由本地安全适配层执行。聚类失败时，Runtime 可以依据结构化结果走修复路径，而不是让模型凭空补写缺失主题。
 
-```json
-{
-  "info_id": "R1-F1",
-  "round": 1,
-  "source": "planning_model"
-}
+### 情感/情绪分析
+
+```text
+上传文本文件
+  → 确认文本列和分析模式
+  → preprocess_text
+  → 选择 general 五分类模型或 chinese 八分类 BERT
+  → 输出每条文本的标签和置信信息
+  → 可选 sentiment_plot
+  → 验收标签数量、产物路径和结果完整性
 ```
 
-用户回答后，状态变为 `filled`，并写入当前会话的 `confirmed_information`。
+### 回归或分类
 
-### 动态任务
-
-```json
-{
-  "id": "T2",
-  "title": "撰写会议议程",
-  "task_goal": "把复盘过程拆解成可执行的时间段",
-  "deliverable": "带时间分配的会议议程",
-  "done_when": "必须包含具体时间分配",
-  "status": "ready",
-  "depends_on": ["T1"],
-  "attempts": 0,
-  "max_attempts": 2,
-  "feedback": []
-}
+```text
+读取数据状态
+  → 确认 target_var 和 feature_vars
+  → 用户确认算法和参数，或由算法调度器提出候选
+  → data_preprocess
+  → feature_processing（填充、编码、标准化）
+  → regression / classification
+  → 输出 R2/RMSE/MAE 或 Accuracy/Precision/Recall/F1
+  → 验收指标和特征重要性
+  → 解释模型限制和结果文件
 ```
 
-规划模型只提供标题、目标、交付物和验收标准；其余状态字段由 `TaskBoard` 创建和维护。
+程序不会在缺少目标变量或特征列时替用户猜列名；会把缺口返回到界面，请用户补充。
 
-### 关键进度事件
+### 项目代码操作
 
-运行时会向 Qt 发送结构化事件，界面不需要猜测模型当前做到了哪一步：
+```text
+Work 模式绑定当前项目
+  → list / glob / grep 定位文件
+  → read_project_file 读取最小必要内容
+  → 生成 edit/write/generate 预览
+  → 用户确认 operation_id
+  → WorkspaceManager 再次校验路径和受保护文件
+  → 执行写入并返回文件状态
+```
 
-| 事件 | 用途 |
-| --- | --- |
-| `routing_decided` | 展示路由和语义重点 |
-| `plan_created` | 展示初始能力步骤 |
-| `plan_reviewed` | 展示本轮 Plan 检查结果 |
-| `clarification_required` | 请求用户补充关键信息 |
-| `information_filled` | 记录用户确认信息 |
-| `plan_document_created` | Plan 文书生成完成 |
-| `plan_review_required` | 等待用户确认 Plan |
-| `task_board_created` | 展示初始任务板 |
-| `task_started` | 当前任务开始 |
-| `task_checked` | 当前任务验收结果 |
-| `task_retry` | 记录反馈并重试当前任务 |
-| `task_repair_started` / `task_repair_finished` | 聚类或情感结果进入规则修复路径，不重新调用 BERT/BGE |
-| `task_completed` | 当前任务通过验收 |
-| `task_blocked` | 当前任务达到重试上限 |
-| `task_board_updated` | Reflection 增加任务 |
-| `replan_requested` | Reflection 请求重新规划 |
-| `replan_started` / `replan_completed` / `replan_failed` | 任务失败后的重新规划生命周期 |
-| `convergence_completed` | 所有任务收敛 |
-| `convergence_blocked` | 任务板因失败停止 |
-| `response_started` / `completed` | 最终结果开始/结束渲染 |
+工作区路径必须位于当前项目根目录内。`.env`、密钥、证书、`.git`、虚拟环境、缓存等受保护内容默认不会被当作普通项目文件读取或修改。输出型产物会限制在应用或项目允许的 `output/` 目录中。
 
-客户端的“执行过程”在任务板建立前只展示规划阶段；收到 `task_board_created` 后会切换为动态任务清单，按 `task_started`、`task_completed`、`task_retry` 和最终任务板状态实时更新。每个任务完成时会短暂高亮后保留对号；重规划会清理旧任务行，避免重新编号的 `T1` 继承上一轮状态。
+### 文档 RAG
 
-聚类和情感分析的修复不等于重新分析。首次分析失败后再次重试，或者重规划明确要求修复时，Runtime 会根据任务语义选择专用规则工具：聚类修复复用已有 `cluster_id` 和原始文本重建簇分布、代表文本与结果文件；情感修复复用已有情感标签和概率重建情感分布与工作簿。若原始分析没有留下可复用标签，修复工具会明确失败并要求重新发起首次分析，而不会偷偷重新加载 BERT/BGE。
+```text
+上传 PDF/Markdown/TXT/DOCX/CSV/JSON
+  → DocumentParser 按文件类型解析
+  → 按标题、页码、段落或表格块切分
+  → 写入 RAG 数据目录和索引
+  → HybridIndex / embedding provider 检索相关证据
+  → 返回带页码、标题、块类型和来源的证据
+  → 当前对话模型根据证据组织回答
+```
 
-## 七、会话、文件与安全边界
+RAG 的检索证据和最终回答是两个阶段：检索层提供来源，模型负责语言组织；不要把没有检索证据支持的内容当成文档原文。
 
-当前会话 `SessionContext` 保存：
+## Work 与 Chat 的实现差异
 
-- 用户上传文件及文件画像；
-- 已确认的信息；
-- 自然语言 Plan；
-- Plan Loop 的 trace；
-- 当前任务板；
-- 已完成任务和产物路径。
+| 项目 | Work | Chat |
+| --- | --- | --- |
+| 使用的助手 | 带注册工具的 `TextMiningAssistant` | `function_list=[]` 的 `AcademicChatAssistant` |
+| 项目工作区 | 可绑定当前项目 | 不绑定项目工具 |
+| 数据/文本分析 | 可以执行 | 不执行 |
+| 文件生成、编辑、删除 | 可执行，但受路径和确认策略约束 | 不执行 |
+| Plan / Task Board | 完整启用 | 不创建执行任务板，直接回答 |
+| 适合场景 | 数据分析、代码修改、文档检索、报告生成 | 概念解释、方法讨论、结果解读 |
 
-文件权限仍沿用项目原有的两类边界：
+上传文件属于当前会话上下文，因此 Chat 模式也可以保留上传资料，但 Chat 模式不会因此获得数据工具或项目写入权限。
 
-1. 用户主动上传的文件是当前会话的授权输入，可以用于分析；上传文件的结果写入应用同级 `output`。
-2. 项目工作区文件只能通过工作区工具访问。代码文件可以通过 `write_project_file` 创建、通过 `edit_project_file` 修改；所有生成、修改和删除操作先创建预览，再由现有确认机制执行。分析报告等产物使用 `generate_project_file` 写入工作区 `output` 目录。
+## 快速开始
 
-Plan 阶段使用无工具规划 Agent，是为了保证“提问、判断、写计划”本身不会产生文件或数据副作用。真正执行工具时又会叠加当前任务允许的工具集合，形成两层保护。
+### 1. 获取代码
 
-## 八、如何运行
+可以在 GitHub 页面点击 `Code → Download ZIP`，也可以使用 Git：
 
-### 启动桌面客户端
+```bash
+git clone <你的 GitHub 仓库地址>
+cd mutiple_ml_mining_tool_agent
+```
 
-在已经配置好依赖和模型环境的情况下：
+### 2. 创建 Python 环境
+
+建议使用 Python 3.10 或 3.11。项目包含 PySide6、PyTorch、Transformers 等依赖，不建议直接使用系统 Python。
+
+macOS / Linux：
+
+```bash
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+Windows PowerShell：
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+如果 PowerShell 阻止虚拟环境脚本运行，可以只对当前窗口临时放开：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+### 3. 启动客户端
+
+激活虚拟环境后，在项目根目录执行：
 
 ```bash
 python qt_client.py
 ```
 
-也可以使用项目启动脚本：
+macOS / Linux 也可以使用启动脚本。脚本默认 Python 路径是项目作者的开发环境，其他用户应显式指定自己的 Python：
 
 ```bash
-bash scripts/start_qt.sh
+PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/start_qt.sh
 ```
 
-启动脚本默认使用 `/opt/miniconda3/envs/trancy_tool/bin/python`，可以通过 `PYTHON_BIN` 指向当前机器的 Python：
+Windows 直接使用 `python qt_client.py` 即可。
+
+## 首次使用顺序
+
+1. 启动客户端。
+2. 登录。普通用户填写任意用户名，选择 Gemini 或千问并填写自己的 API Key；普通用户密码可以留空。
+3. 如果使用 Ollama，登录后在客户端顶部的模型菜单切换到 Ollama，并确认 Ollama 服务已经启动。
+4. 使用文本聚类、情感分析或关键词提取前，先完成下一节的本地模型下载和目录配置。
+5. 上传 CSV/Excel/JSON/文本等文件，然后在 `Work` 模式下发起分析；`Chat` 模式只进行自然语言问答，不执行文件和数据工具。
+
+登录账号和模型服务凭据是两件事：登录用于应用访问控制，API Key 用于调用模型服务。勾选“记住 API Key”后，凭据会保存在本机 SQLite 中，请不要把运行目录或本地数据库分享给其他人。
+
+## 必须准备的本地 BERT / BGE 模型
+
+### 这一步不能省略
+
+代码仓库不包含 BERT、Transformer 或 BGE 模型权重。相关文本算法使用本地加载方式，不会在运行时自动联网下载模型；用户必须自行从模型提供方下载完整模型目录，并在客户端中配置目录。
+
+建议把模型放在仓库之外，例如 `/Users/yourname/models/pretrain_models` 或 `D:\\models\\pretrain_models`，避免模型文件被提交到 GitHub。
+
+### 推荐目录结构
+
+`PRETRAINED_MODELS_DIR` 应指向下面这个“模型库根目录”，而不是压缩包文件：
+
+```text
+pretrain_models/
+├── bge-cn/
+│   ├── config.json
+│   ├── tokenizer.json 或 tokenizer.model
+│   └── 模型权重文件（*.safetensors 或 pytorch_model.bin）
+├── multilingual-sentiment-analysis/
+│   ├── config.json
+│   ├── tokenizer 和词表文件
+│   └── 模型权重文件
+└── xuyuan-trial-sentiment-bert-chinese/
+    ├── config.json
+    ├── tokenizer 和词表文件
+    └── 模型权重文件
+```
+
+三个子目录的用途如下：
+
+| 子目录 | 模型用途 | 使用场景 |
+| --- | --- | --- |
+| `bge-cn` | 中文文本向量模型，不是分类 BERT | 文本聚类、文本向量和部分关键词/主题分析 |
+| `multilingual-sentiment-analysis` | 通用五分类情感模型 | `general` 通用情感分析模式 |
+| `xuyuan-trial-sentiment-bert-chinese` | 中文八分类情绪 BERT 模型 | `chinese` 中文情感/情绪分析模式 |
+
+模型目录必须是解压后的完整 Transformers 模型目录，不能只放一个 `.bin` 或 `.safetensors` 文件。至少应同时包含 `config.json`、tokenizer/词表文件和完整权重；不同模型的文件名可能不同。
+
+### 配置方式 A：在客户端中配置
+
+登录后打开顶部 `模型` 菜单，选择 `设置文本挖掘模型库…`，或者打开设置窗口的 `模型` 页面：
+
+1. 选择包含 `bge-cn` 等子目录的 `pretrain_models` 根目录。
+2. 保存后查看界面中的模型检查结果。
+3. 如果要使用单独的中文八分类 BERT，可以在“中文八分类情绪模型”中直接选择 `xuyuan-trial-sentiment-bert-chinese` 目录。
+
+首次使用文本挖掘时，如果没有检测到 `bge-cn`，客户端也会提示配置模型库目录。
+
+### 配置方式 B：在 `.env` 中配置
+
+复制配置模板：
 
 ```bash
-PYTHON_BIN=/path/to/python bash scripts/start_qt.sh
+cp .env.example .env
 ```
 
-模型及服务配置沿用项目的 `.env`、`.env.example` 和 `academic_agent/agent/providers/config.py`。如果只想进行自然语言问答，可以在客户端切换到 Chat 模式；Chat 模式不执行工具，也不会进入复杂任务板。
+然后至少填写模型库根目录：
 
-### 运行编译检查
+```dotenv
+PRETRAINED_MODELS_DIR=/Users/yourname/models/pretrain_models
+```
+
+Windows 示例：
+
+```dotenv
+PRETRAINED_MODELS_DIR=D:/models/pretrain_models
+```
+
+如果中文八分类模型不在模型库根目录的默认位置，也可以单独指定：
+
+```dotenv
+SENTIMENT_MODEL_PATH=/Users/yourname/models/pretrain_models/xuyuan-trial-sentiment-bert-chinese
+```
+
+修改 `.env` 后请重启客户端。源码运行时 `.env` 放在项目根目录；打包后的应用可以把 `.env` 放在应用旁边，或直接使用客户端设置页面配置。
+
+### 模型来源说明
+
+本项目不替用户选择或重新分发模型权重。请根据项目原始实现、模型提供方的仓库说明和许可证下载对应模型，并确认模型用途与许可证符合你的部署场景。不要把未经许可的模型权重提交到公共 GitHub 仓库。
+
+## 文本算法的外部源项目依赖
+
+源码运行时，以下文本能力通过适配器复用外部项目 `video_text_mutiplemodal_agent` 的实现：
+
+- 文本预处理；
+- BGE 向量和文本聚类；
+- 中文 BERT 情感分析；
+- 部分 KeyBERT/主题词流程。
+
+如果你只下载当前仓库而没有下载这个源项目，上述源项目依赖的能力可能无法使用；数据分析、通用机器学习、可视化、文档 RAG 等当前仓库内的能力仍可按依赖情况运行。
+
+推荐目录关系：
+
+```text
+parent/
+├── mutiple_ml_mining_tool_agent/
+└── video_text_mutiplemodal_agent/
+    ├── src_codes/main_process_agent/text_processor_subagent_stage_3/
+    └── pretrain_models/
+```
+
+如果源项目不在默认的同级目录，请在 `.env` 中显式配置：
+
+```dotenv
+VIDEO_AGENT_SOURCE_ROOT=/absolute/path/to/video_text_mutiplemodal_agent
+PRETRAINED_MODELS_DIR=/absolute/path/to/pretrain_models
+```
+
+`VIDEO_AGENT_SOURCE_ROOT` 必须指向源项目根目录，不能直接指向 `src_codes` 或 `text_processor_subagent_stage_3` 子目录。
+
+## 大模型服务配置
+
+### 方式 1：客户端登录时填写 API Key
+
+普通用户可以在登录窗口选择：
+
+- Gemini；
+- 千问（新加坡）；
+- 千问（北京）。
+
+填写自己的 API Key 后即可使用。API Key 不要写进提交到 GitHub 的文件。
+
+### 方式 2：使用 `.env`
+
+`.env.example` 已包含完整注释。最常用的配置如下：
+
+```dotenv
+# auto 会按 Gemini → 千问新加坡 → 千问北京 → Ollama 尝试
+LLM_PROVIDER=auto
+
+# Gemini，二选一即可
+GOOGLE_API_KEY=your_google_api_key
+# GEMINI_API_KEY=your_gemini_api_key
+
+# 千问新加坡，二选一即可
+# ALIYUN_API_KEY=your_aliyun_api_key
+# DASHSCOPE_API_KEY_SG=your_dashscope_api_key
+
+# 千问北京
+# DASHSCOPE_API_KEY_BJ=your_dashscope_beijing_api_key
+
+QWEN_MODEL=qwen-plus
+DEFAULT_MODEL=gemini-3.6-flash
+```
+
+也可以明确指定服务，避免自动回退：
+
+```dotenv
+LLM_PROVIDER=gemini
+```
+
+或：
+
+```dotenv
+LLM_PROVIDER=qwen
+```
+
+### 使用 Ollama
+
+先在本机安装并启动 Ollama，再准备一个可用的模型。项目默认配置是 `qwen3.5:2b`，实际使用的模型以 `OLLAMA_MODEL` 为准：
+
+```bash
+ollama serve
+ollama pull qwen3.5:2b
+```
+
+`.env` 示例：
+
+```dotenv
+LLM_PROVIDER=ollama
+OLLAMA_HOST=127.0.0.1
+OLLAMA_PORT=11434
+OLLAMA_MODEL=qwen3.5:2b
+```
+
+如果客户端提示连接失败，请先执行 `ollama list` 确认模型名称，再检查端口是否与 `OLLAMA_PORT` 一致。
+
+当前登录窗口的普通用户表单主要面向 Gemini/千问 API Key；使用“仅 Ollama、完全没有云端 API Key”的部署方式时，应由部署方提供可用的应用账号，或在发布前按自己的认证需求修改 `academic_agent/controllers/auth.py`。
+
+## 运行时目录和产物
+
+源码运行时，程序默认使用以下目录：
+
+| 目录/变量 | 默认用途 | 可选配置 |
+| --- | --- | --- |
+| `output/` | 图片、表格、报告等分析产物 | `ACADEMIC_AGENT_OUTPUT_DIR` |
+| `runtime/` | SQLite、会话和运行时数据 | `ACADEMIC_AGENT_DATA_DIR` |
+| `runtime/rag_datasets/` | 文档 RAG 的索引和元数据 | `RAG_DATA_DIR` |
+| `workspace/` 或当前工作区 | 项目文件操作范围 | 在客户端项目设置中选择 |
+| `QWEN_AGENT_DEFAULT_WORKSPACE` | Qwen-Agent 内部可写工作区 | 可选，不建议指向只读目录 |
+
+服务器或多用户环境建议把可写目录放到应用目录之外：
+
+```dotenv
+ACADEMIC_AGENT_DATA_DIR=/var/lib/academic-agent
+ACADEMIC_AGENT_OUTPUT_DIR=/var/lib/academic-agent/output
+RAG_DATA_DIR=/var/lib/academic-agent/rag_datasets
+```
+
+桌面单用户使用时可以保持默认配置。
+
+## 使用方式
+
+### Work 模式
+
+Work 模式会执行完整的任务链路：
+
+```text
+用户目标
+  → 能力路由
+  → 补充必要信息
+  → 生成可审阅的 Plan
+  → 拆分 Dynamic Task Board
+  → 当前任务执行
+  → 结构化验收
+  → 重试或有限重规划
+  → 汇总已完成结果
+```
+
+用户可以选择“请求批准”或“帮我批准”。自动模式只自动化规划和算法任务，不会绕过文件生成、编辑和删除操作的确认机制。
+
+### Chat 模式
+
+Chat 模式只进行自然语言对话、解释和思路整理，不读取、生成、修改或删除项目文件，也不调用数据分析工具。
+
+### 典型操作
+
+1. 在底部点击上传文件。
+2. 选择 CSV/Excel/JSON/文本等文件。
+3. 进入 Work 模式，输入“请先告诉我数据规模、字段和适合的分析方向”。
+4. 根据 Plan 卡片补充目标字段、特征字段或文本列。
+5. 确认执行后查看任务进度和 `output/` 中的结果文件。
+
+## 源码目录
+
+```text
+academic_agent/
+├── agent/                  # Runtime、Plan、Task Board、工具作用域和模型适配
+├── algorithms/             # 机器学习、文本挖掘、预处理和可视化算法
+├── application/services/   # 数据、ML、文本挖掘和可视化用例
+├── controllers/            # 应用、账号、项目、会话和 Agent 生命周期
+├── infrastructure/         # 路径、产物、权限、模型、存储和运行时安全
+├── rag/                    # 文档解析、切分、混合检索和引用证据
+├── repositories/           # SQLite 对话、项目和会话存储
+├── tools/                  # 稳定的业务工具入口
+└── views/                  # PySide6 界面
+qt_client.py                # 桌面客户端入口
+scripts/start_qt.sh         # macOS/Linux 启动脚本
+```
+
+关键代码入口：
+
+- `qt_client.py`：准备 Qt、运行时目录和单实例保护，然后启动主窗口。
+- `academic_agent/agent/runtime.py`：负责请求路由、计划、任务执行、验收、重试和结果汇总。
+- `academic_agent/agent/tooling/builtins.py`：注册数据、文本、机器学习、可视化、RAG 和工作区工具。
+- `academic_agent/agent/planning/algorithm_scheduler.py`：让模型提出算法选择，程序校验并直接执行确定性算法。
+- `academic_agent/integrations/video_text_adapter.py`：配置本地模型，并适配外部文本算法源项目。
+- `academic_agent/rag/README.md`：文档 RAG 的实现说明。
+
+## 从源码构建桌面安装包
+
+### macOS
+
+macOS 构建需要 PyInstaller，并且当前 spec 默认要求能找到外部源项目的 `text_processor_subagent_stage_3`：
+
+```bash
+PYTHON_BIN="$PWD/.venv/bin/python" \
+VIDEO_AGENT_SOURCE_ROOT=/absolute/path/to/video_text_mutiplemodal_agent \
+bash scripts/build_macos.sh
+```
+
+产物：
+
+```text
+dist/AcademicAgent.app
+```
+
+默认不把本地模型权重放进 `.app`。推荐发布时让用户自行下载模型并在应用中选择模型库目录；如确实需要将源项目模型一起打包，可在构建时设置 `INCLUDE_LOCAL_MODELS=1`，但需要自行评估包体积和模型许可证。
+
+### Windows
+
+Windows 构建脚本使用 Python 3.10，运行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\build_windows.ps1
+```
+
+产物：
+
+```text
+dist\\AcademicAgent-windows.zip
+```
+
+Windows spec 默认不携带真实 `.env`、本地模型权重和外部源项目。发布压缩包后，用户仍需要自行配置 API Key、模型目录；如果需要源项目支持的文本算法，应在构建阶段把源项目纳入发布方案。
+
+## 常见问题
+
+### 1. `No module named qwen_agent`
+
+源码运行时安装：
+
+```bash
+python -m pip install "qwen-agent>=0.0.34"
+```
+
+然后确认运行客户端的 Python 与安装依赖的 Python 是同一个虚拟环境：
+
+```bash
+python -c "import qwen_agent; print(qwen_agent.__file__)"
+```
+
+### 2. 提示找不到 `bge-cn` 或模型库目录不完整
+
+`PRETRAINED_MODELS_DIR` 必须指向包含 `bge-cn/` 的根目录：
+
+```text
+正确：/Users/yourname/models/pretrain_models/bge-cn
+配置：/Users/yourname/models/pretrain_models
+```
+
+在客户端的模型设置页面重新选择这个根目录，并确认目录中不是压缩包。
+
+### 3. 提示找不到中文 BERT 模型
+
+确认下面的目录真实存在并含有完整 Transformers 文件：
+
+```text
+<PRETRAINED_MODELS_DIR>/xuyuan-trial-sentiment-bert-chinese/
+```
+
+也可以在设置页面的“中文八分类情绪模型”中直接选择该目录，或设置 `SENTIMENT_MODEL_PATH`。
+
+### 4. 提示 `源项目不存在` 或找不到 `text_processor_subagent_stage_3`
+
+检查 `VIDEO_AGENT_SOURCE_ROOT` 是否指向 `video_text_mutiplemodal_agent` 根目录，并确认下面的路径存在：
+
+```text
+<VIDEO_AGENT_SOURCE_ROOT>/src_codes/main_process_agent/text_processor_subagent_stage_3/
+```
+
+### 5. Ollama 连接失败
+
+确认 Ollama 正在运行、模型已经下载，并检查：
+
+```bash
+ollama list
+curl http://127.0.0.1:11434/api/tags
+```
+
+如果端口或地址不同，同步修改 `OLLAMA_HOST` 和 `OLLAMA_PORT`。
+
+### 6. 输出目录或运行目录没有写权限
+
+将可写路径配置到用户有权限的目录：
+
+```dotenv
+ACADEMIC_AGENT_DATA_DIR=/Users/yourname/Library/Application Support/AcademicAgent
+ACADEMIC_AGENT_OUTPUT_DIR=/Users/yourname/Documents/AcademicAgent/output
+```
+
+Windows 请使用当前用户有权限的目录，例如 `D:/AcademicAgent/data`。
+
+## 验证和测试
+
+语法检查：
 
 ```bash
 python -m compileall -q academic_agent tests
 ```
 
-### 运行编排测试
-
-如果环境已安装 pytest：
+运行全部测试：
 
 ```bash
-pytest tests/test_orchestration.py
-pytest tests
+python -m pytest tests
 ```
 
-`tests/test_orchestration.py` 覆盖：
+也可以先运行与调度和模型路径相关的测试：
 
-- Plan Loop 每轮最多 3 个信息缺口；
-- 问题编号、答案回填和重复问题过滤；
-- 任务板稳定 ID、状态和顺序依赖；
-- `passed/feedback` 验收契约；
-- 一次执行一个任务、重试和最终结果组装。
+```bash
+python -m pytest \
+  tests/test_model_paths.py \
+  tests/test_algorithm_scheduler.py \
+  tests/test_orchestration.py
+```
 
-## 九、如何扩展
+部分测试和功能需要 PyTorch、Transformers、外部源项目或本地模型。缺少这些可选资源时，测试环境应明确区分“代码契约测试通过”和“完整模型链路已验证”，不要把前者当成完整功能验证。
 
-### 增加一种能力路由
+本次文档更新还实际启动并渲染了 PySide6 主窗口、登录窗口和模型设置窗口，截图位于 `docs/screenshots/`。
 
-1. 在 `academic_agent/agent/types.py` 增加 `AgentRoute` 枚举项。
-2. 在 `academic_agent/agent/skills/catalog.py` 注册该能力对应的工作流和工具。
-3. 在 `academic_agent/agent/planning/planner.py` 增加确定性的路由识别和预期产物。
-4. 在工具注册表中注册真实工具，并确保工具处理器遵守工作区边界。
-5. 为该路由补充 Plan-to-Task 和 Convergence 的验收测试。
+## 安全与发布注意事项
 
-### 增加新的任务验收规则
+- 不要提交 `.env`、API Key、模型权重、SQLite 数据库、`runtime/`、`output/` 和用户上传文件；仓库的 `.gitignore` 已默认忽略这些内容。
+- 当前仓库中的登录控制是桌面应用级别的本地认证，不是生产级多租户身份系统。公开部署前请检查并修改 `academic_agent/controllers/auth.py` 中的管理员账号策略，不要直接沿用源码中的演示凭据。
+- 普通用户勾选记住 API Key 后，凭据会写入本机 SQLite；共享电脑或发布给他人使用时建议取消勾选，或改用更安全的密钥管理方案。
+- 文件生成、编辑和删除属于有副作用的操作，应用会保留确认边界；请不要为了“全自动”而盲目打开所有写权限。
+- LLM 负责选择工具和解释结果，回归、分类、因果推断、聚类等数值计算仍由程序和算法库完成；模型不能替代实验设计、统计审查或业务判断。
+- 该项目目前没有内置 HTTP API、账号服务器、任务队列和容器编排方案。如果需要面向多人提供在线服务，需要另行设计服务端隔离、鉴权、资源限制和数据生命周期。
 
-优先让任务的 `done_when` 表达可由模型和工具观察共同检查的条件，例如“必须包含字段名”“必须产生一个存在的图表文件”“必须给出指标和限制”。不要把模糊的“看起来不错”作为验收标准。
+## 许可证和模型许可
 
-如果规则是绝对的、可由程序可靠判断的，可以在 `TaskVerifier` 中加入确定性检查；如果规则依赖语义理解，则保留给无工具规划/检查模型，并把依据写入 `evidence` 或 `feedback`。
-
-### 扩展 Reflection
-
-新增 Reflection 动作时要保持“模型提议、程序验证、程序落状态”的顺序。建议的扩展顺序是：
-
-1. 验证新增任务字段和依赖；
-2. 限制新增任务数量；
-3. 记录版本号和事件；
-4. 让 UI 展示变化原因；
-5. 如果是 `replan_plan`，暂停执行并重新进入 Plan Review，而不是在原 Plan 上静默改写。
-
-## 十、当前版本的明确边界
-
-为了让使用者知道当前实现到哪里，下面这些点是有意保留的边界：
-
-- Plan Review 当前支持在对话内查看；执行方式通过输入区下拉框选择，人工模式在卡片中确认，全自动模式直接继续，尚未提供直接编辑整份 Plan 的能力。
-- Plan 信息缺口当前使用模型生成的单选项，用户通过点击回答，不再自由输入。
-- Reflection 已支持新增后续任务，以及任务失败后的有限次重新规划。
-- 任务板已经支持依赖字段，但当前 Plan-to-Task 默认按顺序建立依赖，尚未做并行调度。
-- 聚类的模型计算默认运行在独立 `spawn` 子进程中，并使用单线程数值库；这会增加一次进程启动和模型加载开销，但可以把原生 BLAS/SentenceTransformer 崩溃限制在子进程内，避免带崩 Qt 客户端。安全边界可通过环境变量临时关闭，但不建议日常关闭。
-- 会话中的 Plan、trace 和任务板目前由 `SessionStore` 保存在运行中的进程内；应用重启后的长期持久化需要接入现有会话存储。
-- Routing、任务检查和 Reflection 的语义输出不可用时，运行时仍有程序侧兜底；Plan Review 会先做安全等价归一化，再严格校验并自动修复一次，避免把内部格式问题伪装成用户问题。连续修复失败时会记录具体原因，并使用不新增用户约束的本地 Plan；坏结构不会写入任务状态。
-
-这些边界不影响当前三阶段主链路，但在继续演进时应保持 Plan、Task Board、验证结果和最终产物之间的职责分离。
-
-## 十一、推荐的开发验证顺序
-
-每次修改 Agent 编排时，建议按以下顺序验证：
-
-1. 先验证 `types.py` 的数据契约和状态迁移；
-2. 再验证 `plan_loop.py` 的问题上限、去重和答案回填；
-3. 使用无工具的语义模型 stub 验证 Runtime 的调用顺序；
-4. 验证任务失败时只重试当前任务，不重复已经完成的任务；
-5. 验证工具调用仍受 `ExecutionScope.allowed_tools` 限制；
-6. 最后在 Qt 客户端验证 Plan Review、补充信息、任务进度和最终结果渲染。
-
-这样可以把“模型输出不稳定”和“程序状态错误”分开定位，也能确保新增能力不会破坏现有的数据分析、可视化、RAG 和工作区操作功能。
+当前仓库应以实际发布版本中的许可证文件为准。外部源项目、BERT/BGE 权重、第三方模型服务和数据集可能分别受不同许可证或服务条款约束。发布应用或模型包前，请分别确认代码、模型、字体、数据和 API 服务的使用权限。

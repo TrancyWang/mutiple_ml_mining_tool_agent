@@ -1,3 +1,11 @@
+# Academic Agent 统一依赖
+#
+# 本文件同时覆盖：源码运行、Windows/macOS 桌面构建和 Qwen-Agent。
+# 用户和构建机都只需要安装这一份依赖；ES、Milvus Lite 等服务仍可按需启用。
+
+# 构建工具
+pyinstaller>=6.0
+
 # 基础依赖
 pandas>=2.0.0
 numpy>=1.24.0
@@ -37,8 +45,8 @@ python-pptx>=0.6.23
 pyarrow>=15.0.0   # Parquet/Feather
 odfpy>=1.4.1      # ODS
 
-# Qwen-Agent (如果本地有)
-# qwen_agent (从本地路径安装)
+# Agent 运行时
+qwen-agent>=0.0.34
 
 # PySide6 对话客户端
 PySide6>=6.7.0
