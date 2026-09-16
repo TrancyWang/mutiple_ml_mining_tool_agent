@@ -27,8 +27,8 @@ class TaskPlanner:
     _DOCUMENT = re.compile(r"文档|文献|学术|研究|PDF|pdf|手册|论文|报告|资料|知识库|检索|引用|原文", re.I)
     _VISUAL = re.compile(r"画图|图表|可视化|折线图|柱状图|词云|散点图|热力图", re.I)
     _ML = re.compile(r"机器学习|分类|回归|因果|预测|训练|特征", re.I)
-    _DATA = re.compile(r"文本挖掘|聚类|情感|关键词|预处理|数据|字段|表格", re.I)
-    _WRITE = re.compile(r"生成|创建|写入|修改|编辑|删除|覆盖", re.I)
+    _DATA = re.compile(r"文本挖掘|聚类|情感|关键词|预处理|实体识别|命名实体|entity recognition|关系抽取|关系识别|relation extraction|知识图谱|knowledge graph|NER|数据|字段|表格", re.I)
+    _WRITE = re.compile(r"生成|创建|写入|写代码|编写|新增代码|实现|重构|修改|编辑|删除|覆盖", re.I)
 
     _ACADEMIC_INTENT_OPTIONS = (
         {

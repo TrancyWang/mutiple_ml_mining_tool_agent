@@ -11,6 +11,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+# 必须早于 PySide6、NumPy、Torch 和 SentenceTransformer 导入，避免
+# tokenizer/BLAS 在线程或子进程切换后进入不安全状态。
+from academic_agent.infrastructure.runtime_safety import configure_numeric_runtime
+
+configure_numeric_runtime()
+
 # macOS Qt 输入法/窗口图层兼容配置，必须在导入 PySide6 前设置。
 if sys.platform == "darwin":
     os.environ.setdefault("QT_MAC_WANTS_LAYER", "1")

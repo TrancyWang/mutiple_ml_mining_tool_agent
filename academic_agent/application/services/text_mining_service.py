@@ -30,5 +30,19 @@ class TextMiningService:
     def keywords(self, text_column=None, top_n=10):
         return self.tool.extract_keywords(text_column, int(top_n))
 
+    def entities(self, text_column=None, batch_size=8, max_texts=200, **kwargs):
+        return self.tool.entity_recognition(
+            text_column, int(batch_size), int(max_texts),
+            provider=kwargs.get("provider"), model=kwargs.get("model"),
+            base_url=kwargs.get("base_url"), api_key=kwargs.get("api_key"),
+        )
+
+    def relations(self, text_column=None, batch_size=8, max_texts=200, **kwargs):
+        return self.tool.relation_extraction(
+            text_column, int(batch_size), int(max_texts),
+            provider=kwargs.get("provider"), model=kwargs.get("model"),
+            base_url=kwargs.get("base_url"), api_key=kwargs.get("api_key"),
+        )
+
 
 text_mining_service = TextMiningService()

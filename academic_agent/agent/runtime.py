@@ -18,6 +18,11 @@ from academic_agent.agent.orchestration.plan_loop import (
     normalize_plan_review,
 )
 from academic_agent.agent.orchestration.verifier import TaskVerifier
+from academic_agent.agent.planning.algorithm_scheduler import (
+    build_algorithm_catalog,
+    fallback_algorithm_schedule,
+    normalize_algorithm_schedule,
+)
 from academic_agent.agent.planning.planner import TaskPlanner
 from academic_agent.agent.response import assistant_content, attach_confirmation_link
 from academic_agent.agent.session import session_store
@@ -292,7 +297,11 @@ class AgentRuntime:
                     raise RuntimeError("用户取消了 Plan，本次任务未执行")
                 auto_mode = bool(decision.get("auto_mode"))
 
-        if plan.configuration and plan_confirmation_callback is not None:
+        algorithm_scheduling_supported = bool(build_algorithm_catalog(plan.available_tools))
+        skip_automatic_algorithm_configuration = bool(
+            auto_mode and algorithm_scheduling_supported
+        )
+        if plan.configuration and plan_confirmation_callback is not None and not skip_automatic_algorithm_configuration:
             if event_callback is not None:
                 event_callback({"type": "configuration_required", "configuration": plan.configuration})
             configuration = plan_confirmation_callback(plan)
@@ -300,6 +309,24 @@ class AgentRuntime:
                 raise RuntimeError("用户取消了算法配置，本次任务未执行")
         else:
             configuration = None
+            if skip_automatic_algorithm_configuration and event_callback is not None:
+                event_callback({
+                    "type": "algorithm_configuration_skipped",
+                    "reason": "全自动模式交由 LLM 算法调度器选择方法",
+                })
+
+        # 机器学习任务增加一个独立的算法调度阶段：LLM 只提出工具顺序、
+        # 算法和参数，normalize_algorithm_schedule 会把它限制在本地能力边界
+        # 内；真正的工具调用在 _execute_task_board 中由程序完成。
+        if semantic_runner is not None and algorithm_scheduling_supported:
+            plan = self._schedule_algorithms(
+                request=request,
+                plan=plan,
+                confirmed=confirmed,
+                configuration=configuration,
+                semantic_runner=semantic_runner,
+                event_callback=event_callback,
+            )
 
         messages = self._build_context(
             request,
@@ -325,6 +352,68 @@ class AgentRuntime:
         if event_callback is not None and board.tasks:
             event_callback({"type": "task_board_created", "board": board.to_dict()})
         return plan, board, messages, auto_mode
+
+    def _schedule_algorithms(
+        self,
+        request: AgentRequest,
+        plan: AgentPlan,
+        confirmed: list[dict[str, Any]],
+        configuration: dict[str, Any] | None,
+        semantic_runner: SemanticRunner,
+        event_callback: Callable[[dict[str, Any]], None] | None,
+        planning_context: dict[str, Any] | None = None,
+    ) -> AgentPlan:
+        """让规划模型选择当前平台的算法工具，并生成可执行调度任务。"""
+
+        catalog = build_algorithm_catalog(plan.available_tools)
+        raw = self._semantic_json(
+            semantic_runner,
+            self._planning_messages(
+                "Algorithm Tool Scheduling",
+                {
+                    "user_requirement": request.query,
+                    "confirmed_information": confirmed,
+                    "plan_goal": plan.objective,
+                    "capability_route": plan.route.value,
+                    "available_tools": list(plan.available_tools),
+                    "algorithm_catalog": catalog,
+                    "user_algorithm_configuration": configuration or {},
+                    "planning_context": planning_context or {},
+                },
+                [
+                    "根据用户问题、当前文件字段和算法目录，规划本平台算法工具的执行顺序",
+                    "只选择 algorithm_catalog 中出现的工具；不得发明新工具、代码或外部 API",
+                    "一个 tasks 项只调度一个工具，按依赖顺序排列；预处理应放在建模之前",
+                    "回归和分类使用 model_type，因果推断使用 method；用户已确认的算法和参数优先",
+                    "scheduled_arguments 必须给出工具需要的字段名；不确定的列名不要猜，留空并让执行模型补齐",
+                    "每项必须包含 task_title、task_goal、deliverable、done_when、scheduled_tool、scheduled_arguments",
+                    "algorithm_decision 说明为何选择该任务类型和算法，但不要生成计算结果",
+                    "严格只返回 JSON：algorithm_decision 和 tasks",
+                ],
+            ),
+        )
+        normalized = normalize_algorithm_schedule(
+            raw,
+            plan.available_tools,
+            configuration=configuration,
+        )
+        if not normalized["tasks"]:
+            normalized = fallback_algorithm_schedule(plan.route.value, configuration)
+
+        scheduled = replace(
+            plan,
+            algorithm_schedule=tuple(normalized["tasks"]),
+            algorithm_decision=dict(normalized.get("algorithm_decision") or {}),
+        )
+        if event_callback is not None:
+            event_callback({
+                "type": "algorithm_schedule_created",
+                "schedule": list(scheduled.algorithm_schedule),
+                "decision": scheduled.algorithm_decision,
+                "warnings": list(normalized.get("errors") or []),
+                "fallback_used": bool(normalized.get("fallback_used")),
+            })
+        return scheduled
 
     def _build_context(
         self,
@@ -521,6 +610,17 @@ class AgentRuntime:
     ) -> TaskBoard:
         if semantic_runner is None or plan.route.value == "chat":
             return TaskBoard.from_plan(plan)
+        if plan.algorithm_schedule:
+            # 调度模型已经输出了带验收标准的任务，因此不再让第二个语义
+            # 拆分阶段重新猜测工具；TaskBoard 只负责分配 ID 和维护状态。
+            return TaskBoard.from_task_plan(
+                plan,
+                {
+                    "board_goal": plan.objective,
+                    "final_deliverable": ", ".join(plan.expected_outputs) or "算法分析结果",
+                    "tasks": list(plan.algorithm_schedule),
+                },
+            )
         task_plan = self._semantic_json(
             semantic_runner,
             self._planning_messages(
@@ -604,6 +704,32 @@ class AgentRuntime:
                         or "规则修复未返回说明"
                     ),
                 }]
+            elif task.scheduled_tool:
+                # 调度任务由程序直接触发确定性工具；LLM 后续只负责把
+                # 结构化结果翻译成用户可读文本，不能再次重复调用算法。
+                scope.allowed_tools = {task.scheduled_tool}
+                scheduled_result = self.executor.execute(
+                    task.scheduled_tool,
+                    **task.scheduled_arguments,
+                )
+                scope.record(
+                    "algorithm_tool_scheduled",
+                    task_id=task_id,
+                    tool=task.scheduled_tool,
+                    arguments=task.scheduled_arguments,
+                    success=bool(scheduled_result.get("success")),
+                )
+                scope.allowed_tools = set()
+                generated = self._consume(
+                    model_runner,
+                    self._task_messages(
+                        plan,
+                        board,
+                        task,
+                        base_messages,
+                        current_observations=scope.task_observations.get(task_id, []),
+                    ),
+                )
             else:
                 generated = self._consume(model_runner, self._task_messages(plan, board, task, base_messages))
             task.result = self._response_text(generated)
@@ -816,7 +942,11 @@ class AgentRuntime:
                 raise RuntimeError("用户取消了重新规划，本次任务未执行")
             next_auto_mode = bool(decision.get("auto_mode"))
 
-        if replanned.configuration and plan_confirmation_callback is not None:
+        algorithm_scheduling_supported = bool(build_algorithm_catalog(replanned.available_tools))
+        skip_automatic_algorithm_configuration = bool(
+            next_auto_mode and algorithm_scheduling_supported
+        )
+        if replanned.configuration and plan_confirmation_callback is not None and not skip_automatic_algorithm_configuration:
             if scope.event_callback is not None:
                 scope.record("configuration_required", configuration=replanned.configuration)
             configuration = plan_confirmation_callback(replanned)
@@ -824,6 +954,22 @@ class AgentRuntime:
                 raise RuntimeError("用户取消了算法配置，本次任务未执行")
         else:
             configuration = None
+            if skip_automatic_algorithm_configuration:
+                scope.record(
+                    "algorithm_configuration_skipped",
+                    reason="全自动模式交由 LLM 算法调度器选择方法",
+                )
+
+        if semantic_runner is not None and algorithm_scheduling_supported:
+            replanned = self._schedule_algorithms(
+                request=request,
+                plan=replanned,
+                confirmed=confirmed,
+                configuration=configuration,
+                semantic_runner=semantic_runner,
+                event_callback=scope.event_callback,
+                planning_context=planning_context,
+            )
 
         messages = self._build_context(
             request,
@@ -858,6 +1004,7 @@ class AgentRuntime:
         board: TaskBoard,
         task: TaskItem,
         base_messages: list[dict[str, Any]],
+        current_observations: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         completed = [
             {
@@ -876,10 +1023,14 @@ class AgentRuntime:
                 "task_goal": task.task_goal,
                 "deliverable": task.deliverable,
                 "done_when": task.done_when,
+                "scheduled_tool": task.scheduled_tool,
+                "scheduled_arguments": task.scheduled_arguments,
             },
             "completed_results": completed,
             "previous_feedback": task.feedback[-1] if task.feedback else "",
         }
+        if current_observations:
+            payload["scheduled_tool_observations"] = current_observations
         instruction = (
             "【当前单任务执行】\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str)}\n"
@@ -890,6 +1041,16 @@ class AgentRuntime:
             "不要在表格中途停止，也不要为了展示全部原始行而输出超长内容。"
             f"\n【Plan 文书】\n{plan.plan_document}"
         )
+        if task.scheduled_tool:
+            instruction += (
+                "\n本任务的算法工具已经由 Runtime 按 scheduled_tool 执行；"
+                "本轮禁止再次调用任何工具，只根据 scheduled_tool_observations 解释成功结果或错误。"
+            )
+        elif task.scheduled_arguments:
+            instruction += (
+                "\n调度器已经确定了部分工具参数；调用 suggested_tools 时必须保留"
+                "scheduled_arguments 中的值，只补齐缺失的字段。"
+            )
         return AgentRuntime._append_system_instruction(base_messages, instruction)
 
     @staticmethod

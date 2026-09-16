@@ -256,7 +256,7 @@ def build_main_window(window) -> None:
     )
     model_menu.addSeparator()
     model_menu.addSection("本地模型路径")
-    model_menu.addAction("设置本地模型目录…", self.configure_model_directory)
+    model_menu.addAction("设置文本挖掘模型库…", self.configure_model_directory)
     model_menu.addAction("恢复默认模型目录", self.reset_model_directory)
     self.model_btn.setMenu(model_menu)
     composer_bar.addWidget(self.model_btn)

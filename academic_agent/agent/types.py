@@ -73,6 +73,10 @@ class AgentPlan:
     available_tools: tuple[str, ...] = ()
     requires_confirmation: bool = False
     configuration: dict[str, Any] | None = None
+    # 由语义规划模型提出、由程序校验后的算法调度任务。它不是工具权限；
+    # 真正可调用的工具仍然只能来自 available_tools。
+    algorithm_schedule: tuple[dict[str, Any], ...] = ()
+    algorithm_decision: dict[str, Any] = field(default_factory=dict)
     route_decision: RoutingDecision | None = None
     expected_outputs: tuple[str, ...] = ()
     success_criteria: tuple[str, ...] = ()
@@ -94,7 +98,15 @@ class AgentPlan:
             lines.append(f"{index}. {step.description}{tool_hint}")
         lines.append("该计划是运行时建议；应依据工具观察结果动态调整。界面会展示简化步骤，最终回答不要重复内部计划。")
         if self.configuration:
-            lines.append("执行前必须遵守用户在算法确认窗口中选择的算法和参数。")
+            lines.append("如果用户确认了算法配置，执行时必须遵守用户选择的算法和参数。")
+        if self.algorithm_schedule:
+            lines.append("算法调度顺序：")
+            for index, item in enumerate(self.algorithm_schedule, 1):
+                suggested = item.get("suggested_tools") or ()
+                tool = str(item.get("scheduled_tool") or (suggested[0] if suggested else ""))
+                title = str(item.get("task_title") or item.get("title") or tool)
+                lines.append(f"{index}. {title}（{tool}）")
+            lines.append("上述调度由程序校验后执行；如果算法工具返回错误，只能根据观察结果重试或重规划。")
         if self.expected_outputs:
             lines.append("预期产物：" + "、".join(self.expected_outputs))
         if self.success_criteria:
@@ -120,6 +132,10 @@ class TaskItem:
     status: TaskStatus = TaskStatus.READY
     depends_on: tuple[str, ...] = ()
     suggested_tools: tuple[str, ...] = ()
+    # scheduled_tool 非空时由 Runtime 直接执行该工具，再让模型解释结果；
+    # 为空时保留旧的模型自主补参调用路径。
+    scheduled_tool: str = ""
+    scheduled_arguments: dict[str, Any] = field(default_factory=dict)
     task_goal: str = ""
     deliverable: str = ""
     done_when: str = ""
@@ -138,6 +154,8 @@ class TaskItem:
             "status": self.status.value,
             "depends_on": list(self.depends_on),
             "suggested_tools": list(self.suggested_tools),
+            "scheduled_tool": self.scheduled_tool,
+            "scheduled_arguments": dict(self.scheduled_arguments),
             "task_goal": self.task_goal,
             "deliverable": self.deliverable,
             "done_when": self.done_when,
@@ -192,6 +210,11 @@ class TaskBoard:
                 suggested_tools=tuple(str(item) for item in (
                     raw.get("tool_hints") or raw.get("suggested_tools") or ()
                 )),
+                scheduled_tool=str(raw.get("scheduled_tool") or ""),
+                scheduled_arguments=(
+                    dict(raw.get("scheduled_arguments"))
+                    if isinstance(raw.get("scheduled_arguments"), dict) else {}
+                ),
                 task_goal=str(raw.get("task_goal") or raw.get("description") or raw.get("title") or task_id),
                 deliverable=str(raw.get("deliverable") or raw.get("description") or raw.get("title") or task_id),
                 done_when=str(raw.get("done_when") or "模型返回当前任务的可用结果"),
@@ -231,6 +254,11 @@ class TaskBoard:
                 str(item) for item in raw_tools
                 if str(item) in plan.available_tools
             ))
+            scheduled_tool = str(raw.get("scheduled_tool") or raw.get("algorithm_tool") or "").strip()
+            if scheduled_tool not in suggested_tools:
+                scheduled_tool = ""
+            raw_arguments = raw.get("scheduled_arguments") or raw.get("tool_arguments") or {}
+            scheduled_arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
             depends_on = (previous_id,) if previous_id else ()
             tasks[task_id] = TaskItem(
                 id=task_id,
@@ -240,6 +268,8 @@ class TaskBoard:
                 deliverable=deliverable,
                 done_when=done_when,
                 suggested_tools=suggested_tools,
+                scheduled_tool=scheduled_tool,
+                scheduled_arguments=scheduled_arguments,
                 status=TaskStatus.READY,
                 depends_on=depends_on,
                 max_attempts=max(1, int(max_attempts)),

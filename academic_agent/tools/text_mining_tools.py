@@ -6,12 +6,16 @@
 import os
 import sys
 import json
-import pandas as pd
-import numpy as np
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 import time
 import ast
+from academic_agent.infrastructure.runtime_safety import configure_numeric_runtime
+
+configure_numeric_runtime()
+
+import pandas as pd
+import numpy as np
 from academic_agent.infrastructure.workspace_manager import workspace_manager
 from academic_agent.infrastructure.analysis_artifacts import (
     artifact_output_root,
@@ -281,7 +285,7 @@ class TextMiningTools:
                     "preview": source_compatible.head(5).to_dict('records'),
                     "sentiment_distribution": source_compatible['sentiment'].value_counts().to_dict(),
                     "model": "video_text_mutiplemodal_agent/sentiment_general_analysis",
-                    "implementation": "text_processor_subagent_stage_3.sentiment.sentiment_general_analysis.predict_sentiment",
+                    "implementation": "academic_agent.integrations.video_text_adapter.SourceVideoTextAdapter.general_sentiment",
                 }
             if mode != "chinese":
                 return {"success": False, "error": "mode 仅支持 chinese 或 general"}
@@ -431,7 +435,7 @@ class TextMiningTools:
                 "artifacts": artifact_result([excel_path, csv_path]),
                 "preview": source_compatible.head(5).to_dict('records'),
                 "algorithm": f"BGE/SentenceTransformer + {algorithm}",
-                "implementation": "text_processor_subagent_stage_3.clustering.clustering.VideoTextClustering",
+                "implementation": "text_processor_subagent_stage_3.common.textEmbedding.TextEmbedding + sklearn.cluster",
                 "algorithm_name": str(algorithm).lower(),
                 "n_clusters": n_clusters,
                 "cluster_sizes": [int(cluster_counts.get(i, 0)) for i in sorted(cluster_counts)],
@@ -722,6 +726,167 @@ class TextMiningTools:
             
         except Exception as e:
             return {"success": False, "error": f"关键词提取失败: {str(e)}"}
+
+    def _llm_information_extraction(
+        self,
+        text_column: Optional[str],
+        extraction_type: str,
+        batch_size: int = 8,
+        max_texts: int = 200,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """按行调用 OpenAI-compatible 大模型并生成实体/关系工作簿。"""
+        try:
+            if self.current_data is None:
+                return {"success": False, "error": "请先加载数据"}
+            text_column = text_column or self.auto_detect_text_column()
+            if not text_column or text_column not in self.current_data.columns:
+                return {"success": False, "error": "无法找到文本列，请明确指定 text_column。"}
+
+            valid = (
+                self.current_data[text_column].notna()
+                & self.current_data[text_column].astype(str).str.strip().ne("")
+            )
+            indexes = list(self.current_data.index[valid])[: max(1, int(max_texts))]
+            texts = [str(self.current_data.at[index, text_column]).strip() for index in indexes]
+            if not texts:
+                return {"success": False, "error": "没有有效文本数据"}
+
+            from academic_agent.algorithms.text_mining.information_extraction import LLMInformationExtractor
+
+            self._runtime_log(
+                "llm_information_extraction",
+                f"调用大模型进行信息抽取；类型={extraction_type}；文本={len(texts)} 条；batch_size={batch_size}",
+            )
+            extractor = LLMInformationExtractor(
+                provider=provider, model=model, base_url=base_url, api_key=api_key
+            )
+            batch = extractor.extract_batch(texts, extraction_type=extraction_type, batch_size=batch_size)
+
+            id_column = self._detect_id_column()
+            record_ids = [self.current_data.at[index, id_column] if id_column else index for index in indexes]
+            entity_rows: list[dict[str, Any]] = []
+            relation_rows: list[dict[str, Any]] = []
+            entity_json_by_index: dict[Any, str] = {}
+            relation_json_by_index: dict[Any, str] = {}
+            for original_index, record_id, item in zip(indexes, record_ids, batch.items):
+                entities = item.get("entities", [])
+                relations = item.get("relations", [])
+                selected_entities = entities if extraction_type in {"entities", "both"} else []
+                selected_relations = relations if extraction_type in {"relations", "both"} else []
+                entity_json_by_index[original_index] = json.dumps(selected_entities, ensure_ascii=False)
+                relation_json_by_index[original_index] = json.dumps(selected_relations, ensure_ascii=False)
+                for entity in selected_entities:
+                    entity_rows.append({
+                        "record_id": record_id,
+                        "row_index": original_index,
+                        "text": item["text"],
+                        "entity_text": entity["text"],
+                        "entity_type": entity["type"],
+                        "start": entity.get("start"),
+                        "end": entity.get("end"),
+                        "confidence": entity.get("confidence"),
+                        "llm_model": batch.model,
+                    })
+                for relation in selected_relations:
+                    relation_rows.append({
+                        "record_id": record_id,
+                        "row_index": original_index,
+                        "text": item["text"],
+                        "subject": relation["subject"],
+                        "subject_type": relation["subject_type"],
+                        "predicate": relation["predicate"],
+                        "object": relation["object"],
+                        "object_type": relation["object_type"],
+                        "confidence": relation.get("confidence"),
+                        "llm_model": batch.model,
+                    })
+
+            if extraction_type in {"entities", "both"}:
+                self.current_data["entities_json"] = pd.NA
+                for index, value in entity_json_by_index.items():
+                    self.current_data.at[index, "entities_json"] = value
+            if extraction_type in {"relations", "both"}:
+                self.current_data["relations_json"] = pd.NA
+                for index, value in relation_json_by_index.items():
+                    self.current_data.at[index, "relations_json"] = value
+
+            entity_table = pd.DataFrame(entity_rows, columns=[
+                "record_id", "row_index", "text", "entity_text", "entity_type",
+                "start", "end", "confidence", "llm_model",
+            ])
+            relation_table = pd.DataFrame(relation_rows, columns=[
+                "record_id", "row_index", "text", "subject", "subject_type", "predicate",
+                "object", "object_type", "confidence", "llm_model",
+            ])
+            task_name = "entity_recognition" if extraction_type == "entities" else "relation_extraction"
+            if extraction_type == "both":
+                task_name = "information_extraction"
+            run_dir = create_run_dir(self.current_file_path, task_name, self.current_source_scope)
+            output_path = run_dir / f"{Path(self.current_file_path or 'analysis').stem}_{task_name}.xlsx"
+            sheets = {"原始数据与结果": self.current_data.copy()}
+            if extraction_type in {"entities", "both"}:
+                sheets["实体识别结果"] = entity_table
+            if extraction_type in {"relations", "both"}:
+                sheets["关系抽取结果"] = relation_table
+            write_workbook(output_path, sheets)
+            self._runtime_log(
+                "llm_information_extraction",
+                f"信息抽取完成；实体={len(entity_table)} 条；关系={len(relation_table)} 条",
+            )
+            return {
+                "success": True,
+                "message": f"大模型{('实体识别' if extraction_type == 'entities' else '关系抽取' if extraction_type == 'relations' else '实体识别和关系抽取')}完成。",
+                "output_file": str(output_path),
+                "artifacts": artifact_result([output_path]),
+                "text_column": text_column,
+                "processed_texts": len(texts),
+                "entity_count": len(entity_table),
+                "relation_count": len(relation_table),
+                "entity_types": entity_table["entity_type"].value_counts().to_dict() if not entity_table.empty else {},
+                "relation_types": relation_table["predicate"].value_counts().to_dict() if not relation_table.empty else {},
+                "entities": entity_table.head(20).to_dict("records"),
+                "relations": relation_table.head(20).to_dict("records"),
+                "model": batch.model,
+                "provider": batch.provider,
+                "llm_used": True,
+                "implementation": "academic_agent.algorithms.text_mining.information_extraction.LLMInformationExtractor",
+            }
+        except Exception as exc:
+            return {"success": False, "error": f"大模型信息抽取失败: {type(exc).__name__}: {exc}", "llm_used": True}
+
+    def entity_recognition(
+        self,
+        text_column: Optional[str] = None,
+        batch_size: int = 8,
+        max_texts: int = 200,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """使用大模型识别实体，结果同时写入实体明细和当前数据。"""
+        return self._llm_information_extraction(
+            text_column, "entities", batch_size, max_texts, provider, model, base_url, api_key
+        )
+
+    def relation_extraction(
+        self,
+        text_column: Optional[str] = None,
+        batch_size: int = 8,
+        max_texts: int = 200,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """使用大模型抽取主语-关系-宾语三元组。"""
+        return self._llm_information_extraction(
+            text_column, "relations", batch_size, max_texts, provider, model, base_url, api_key
+        )
 
 # 创建全局工具实例
 text_mining_tools = TextMiningTools()

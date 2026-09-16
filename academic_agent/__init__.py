@@ -4,6 +4,10 @@
 Repository、模型服务、工具适配器和算法实现均在该包内独立维护。
 """
 
+from academic_agent.infrastructure.runtime_safety import configure_numeric_runtime
+
+configure_numeric_runtime()
+
 from academic_agent.models import AgentMode, ApplicationState, AuthSession
 
 __all__ = ["AgentMode", "ApplicationState", "AuthSession"]

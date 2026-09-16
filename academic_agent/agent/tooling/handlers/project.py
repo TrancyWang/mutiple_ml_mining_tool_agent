@@ -52,6 +52,28 @@ def generate_project_file(**kwargs: Any) -> dict[str, Any]:
     return result
 
 
+def write_project_file(**kwargs: Any) -> dict[str, Any]:
+    """Create or overwrite a source/text file directly in the current workspace.
+
+    Unlike ``generate_project_file``, this tool is for project source files and
+    does not redirect the path into ``output``. WorkspaceManager still enforces
+    the workspace boundary, protected-file rules and confirmation workflow.
+    """
+
+    path = str(kwargs["path"])
+    content = kwargs.get("content", "")
+    if not isinstance(content, str):
+        raise TypeError("代码文件内容必须是文本字符串")
+    result = workspace_manager.prepare_generate(
+        path,
+        content,
+        bool(kwargs.get("overwrite", False)),
+    )
+    result["format"] = Path(path).suffix.lower().lstrip(".") or "text"
+    result["workspace"] = str(workspace_manager.root)
+    return result
+
+
 def execute_python_analysis(**kwargs: Any) -> dict[str, Any]:
     from academic_agent.infrastructure.code_executor import execute_python_in_temp_workspace
 
@@ -72,4 +94,3 @@ def delete_project_file(**kwargs: Any) -> dict[str, Any]:
 
 def confirm_workspace_operation(**kwargs: Any) -> dict[str, Any]:
     return workspace_manager.confirm(kwargs["operation_id"])
-

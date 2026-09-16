@@ -180,7 +180,10 @@ class SettingsWindow(QMainWindow):
         return page
 
     def _model_page(self) -> QWidget:
-        page, layout = self._page("模型", "管理本地模型目录；当前对话模型仍可在输入框底部切换。")
+        page, layout = self._page(
+            "模型",
+            "管理文本挖掘模型库和可选的中文情绪模型；对话模型仍可在输入框底部切换。",
+        )
         def path_card(title: str, description: str, value: str, buttons: list[tuple[str, object]]) -> QFrame:
             host = QWidget()
             row = QHBoxLayout(host)
@@ -197,32 +200,37 @@ class SettingsWindow(QMainWindow):
             return self._card(title, description, host)
 
         model_value = str(
-            self.main_window.model_settings.value("pretrained_models_dir", "默认模型目录")
-            or "默认模型目录"
+            self.main_window.model_settings.value(
+                "pretrained_models_dir", "未指定（使用默认模型库）"
+            )
+            or "未指定（使用默认模型库）"
         )
         layout.insertWidget(
             layout.count() - 1,
             path_card(
-                "本地模型目录",
-                "用于 BGE 向量模型和文本挖掘模型。",
+                "文本挖掘模型库根目录",
+                "请选择 pretrain_models 文件夹。程序会自动查找 BGE、通用五分类和中文八分类模型。",
                 model_value,
-                [("设置目录", self._configure_model_directory)],
+                [("设置模型库", self._configure_model_directory)],
             ),
         )
 
         sentiment_value = str(
-            self.main_window.model_settings.value("sentiment_model_path", "默认模型")
-            or "默认模型"
+            self.main_window.model_settings.value(
+                "sentiment_model_path",
+                "未单独指定（使用模型库中的中文八分类模型）",
+            )
+            or "未单独指定（使用模型库中的中文八分类模型）"
         )
         layout.insertWidget(
             layout.count() - 1,
             path_card(
-                "情感分析模型",
-                "配置中文情感分析模型目录。",
+                "中文八分类情绪模型（可选）",
+                "仅用于中文情绪分析模式。通用五分类模型不在这里选择，而是由上方模型库自动查找。",
                 sentiment_value,
                 [
-                    ("选择目录", self._configure_sentiment_model),
-                    ("恢复默认", self._reset_sentiment_model),
+                    ("选择中文模型", self._configure_sentiment_model),
+                    ("使用模型库默认", self._reset_sentiment_model),
                 ],
             ),
         )

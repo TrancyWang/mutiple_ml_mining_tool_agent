@@ -29,12 +29,13 @@ class SkillCatalog:
             AgentSkill(
                 "project_workspace",
                 AgentRoute.PROJECT,
-                "在当前项目边界内检索、读取与生成文件",
+                "在当前项目边界内检索、读取、创建与修改代码文件",
                 (
                     "list_project_files", "glob_project_files", "grep_project_files",
-                    "read_project_file", "generate_project_file", "edit_project_file",
+                    "read_project_file", "write_project_file", "edit_project_file",
+                    "generate_project_file",
                 ),
-                ("定位目标文件", "读取最小必要内容", "执行或预览文件操作"),
+                ("定位目标文件", "读取最小必要内容", "创建或修改代码并预览文件操作"),
             ),
             AgentSkill(
                 "data_mining",
@@ -43,7 +44,8 @@ class SkillCatalog:
                 (
                     "profile_data", "load_data", "data_statistics", "data_preprocess",
                     "preprocess_text", "sentiment_analysis",
-                    "text_clustering", "extract_keywords",
+                    "text_clustering", "extract_keywords", "entity_recognition",
+                    "relation_extraction",
                 ),
                 ("识别文件结构与字段", "确认文本列和参数", "执行分析并汇总质量指标"),
             ),

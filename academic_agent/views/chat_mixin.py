@@ -383,6 +383,31 @@ class ChatMixin:
                     "status": "running",
                 })
             self._show_algorithm_configuration(event.get("configuration") or {})
+        elif event_type == "algorithm_schedule_created":
+            schedule = event.get("schedule") or []
+            names = []
+            for item in schedule:
+                if not isinstance(item, dict):
+                    continue
+                tool = item.get("scheduled_tool")
+                if not tool:
+                    tools = item.get("suggested_tools") or []
+                    tool = tools[0] if tools else "模型补参"
+                names.append(str(tool))
+            if names:
+                suffix = "（已转为模型补参）" if event.get("warnings") else ""
+                logs.append({
+                    "message": "LLM 已规划算法调度：" + " → ".join(names) + suffix,
+                    "level": "info",
+                })
+        elif event_type == "algorithm_configuration_skipped":
+            matched = next((step for step in steps if step.get("key") == "algorithm_configuration"), None)
+            if matched is not None:
+                matched["status"] = "completed"
+            logs.append({
+                "message": str(event.get("reason") or "全自动模式：由 LLM 选择算法"),
+                "level": "info",
+            })
         elif event_type == "tool_started":
             tool = str(event.get("tool", "tool"))
             label = str(event.get("label") or "分析工具")

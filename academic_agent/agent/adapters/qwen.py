@@ -55,7 +55,7 @@ class TextMiningToolWrapper(BaseTool):
     """文本挖掘工具的 Qwen-Agent 包装器"""
     
     name = 'text_mining_tool'
-    description = '文本挖掘工具集，支持数据加载、预处理、情感分析、聚类、关键词提取等功能'
+    description = '文本挖掘工具集，支持数据加载、预处理、情感分析、聚类、关键词、实体识别和关系抽取'
     
     parameters = {
         'type': 'object',
@@ -63,8 +63,9 @@ class TextMiningToolWrapper(BaseTool):
             'action': {
                 'type': 'string',
                 'description': '要执行的操作',
-                'enum': ['load_data', 'preprocess', 'sentiment_analysis', 
-                        'clustering', 'extract_keywords', 'get_info']
+                'enum': ['load_data', 'preprocess', 'sentiment_analysis',
+                        'clustering', 'extract_keywords', 'entity_recognition',
+                        'relation_extraction', 'get_info']
             },
             'file_path': {
                 'type': 'string',
@@ -110,6 +111,28 @@ class TextMiningToolWrapper(BaseTool):
                 'description': '情感模式：chinese 八分类或 general 五分类',
                 'enum': ['chinese', 'general'],
                 'default': 'chinese'
+            },
+            'batch_size': {
+                'type': 'integer',
+                'description': '大模型信息抽取每批文本数，默认 8',
+                'default': 8
+            },
+            'max_texts': {
+                'type': 'integer',
+                'description': '大模型信息抽取最多处理文本数，默认 200',
+                'default': 200
+            },
+            'provider': {
+                'type': 'string',
+                'description': '信息抽取模型服务：auto、gemini、qwen、qwen-beijing 或 ollama'
+            },
+            'model': {
+                'type': 'string',
+                'description': '可选的模型名称'
+            },
+            'base_url': {
+                'type': 'string',
+                'description': '可选的 OpenAI-compatible 服务地址'
             }
         },
         'required': ['action']
@@ -140,6 +163,8 @@ class TextMiningToolWrapper(BaseTool):
                 'sentiment_analysis': 'sentiment_analysis',
                 'clustering': 'text_clustering',
                 'extract_keywords': 'extract_keywords',
+                'entity_recognition': 'entity_recognition',
+                'relation_extraction': 'relation_extraction',
                 'get_info': 'get_data_info',
             }
             tool_name = action_map.get(action)
@@ -192,7 +217,7 @@ class MLToolWrapper(BaseTool):
             },
             'model_type': {
                 'type': 'string',
-                'description': '回归模型或分类模型；分类当前支持 svm'
+                'description': '回归或分类模型。分类支持 svm、logistic、random_forest、extra_trees、gradient_boosting、knn、naive_bayes；回归支持 linear、ridge、random_forest、gbdt、adaboost、xgboost、lightgbm、catboost、elastic_net、huber、extra_trees、knn'
             },
             'method': {
                 'type': 'string',
@@ -332,7 +357,7 @@ class RegistryToolWrapper(BaseTool):
     """统一工具入口：自然语言 Agent 和 UI Tools 使用同一注册表。"""
 
     name = "analysis_tool"
-    description = "统一工具入口。先选择 action，再提供 params；支持数据分析、可视化、当前项目工作区的 Glob/Grep/Read/Edit/Write/Delete，以及必要时在临时工作区执行受控 Python 分析代码。generate_project_file 可根据 .md/.txt/.json/.csv/.xlsx/.docx/.pdf/.pptx 扩展名生成对应文件。调用生成、编辑或删除工具会先创建待确认预览，确认由 Qt 对话框中的可点击链接完成。"
+    description = "统一工具入口。先选择 action，再提供 params；支持数据分析、可视化、当前项目工作区的 Glob/Grep/Read/Write/Edit/Delete。write_project_file 用于在当前工作区创建或覆盖代码文件，generate_project_file 用于把分析文档写入 output 目录；必要时可在临时工作区执行受控 Python 分析代码。调用工作区生成、写入、编辑或删除工具会先创建待确认预览，确认由 Qt 对话框中的可点击链接完成。"
     parameters = {
         "type": "object",
         "properties": {
@@ -475,11 +500,12 @@ class AgentService:
 
 【核心功能】
 1. **数据处理**：加载CSV/Excel文件、文本预处理、分词、去停用词
-2. **文本挖掘**：情感分析、文本聚类、关键词提取
-3. **机器学习**：因果推断、回归分析、分类建模
+2. **文本挖掘**：情感分析、文本聚类、关键词提取、实体识别、关系抽取
+3. **机器学习**：因果推断、回归分析、分类建模（支持多种分类算法）
 4. **可视化**：生成词云、分布图、模型评估图表
 5. **文档 RAG**：对用户上传或当前工作区文档进行结构化解析、混合检索，并根据页码、标题和块类型返回引用证据
-6. **项目文件生成**：可以在当前项目工作区生成 Markdown、TXT、JSON、CSV、Excel、Word、PDF 和 PPT 文件；禁止访问工作区之外的路径、密钥和隐藏配置
+6. **项目代码开发**：可以在当前项目工作区读取、创建和修改 Python、JavaScript、TypeScript、HTML、CSS、Java、C/C++、Go、Rust 等源代码文件；禁止访问工作区之外的路径、密钥和隐藏配置
+7. **分析产物生成**：可以在当前项目工作区的 output 目录生成 Markdown、TXT、JSON、CSV、Excel、Word、PDF 和 PPT 文件
 
 【工作流程】
 - Work 模式会由 Runtime 先完成 Routing、Plan 和任务板转换
@@ -494,11 +520,12 @@ class AgentService:
 - 解释技术术语，让用户容易理解
 - 提供实用的建议和下一步操作
 - 如果出错，清楚地说明问题所在
-- 涉及项目文件时，先使用项目工作区工具检索或读取，再生成文件；生成文件前说明目标路径
+- 涉及项目文件时，先使用项目工作区工具检索或读取，再创建或修改文件；生成代码文件使用 write_project_file，修改已有文件使用 edit_project_file，生成分析报告使用 generate_project_file
 - 生成 .docx、.pdf、.pptx 或 .xlsx 时，将内容以清晰的 Markdown/纯文本结构传给 generate_project_file，由工具负责转换为对应二进制文档
 - 只有当现有文本挖掘、机器学习和可视化工具无法完成任务时，才调用 execute_python_analysis；代码必须是短小、可复现的 Python 分析脚本，输入文件通过 input_files 显式声明
+- 如果当前任务消息包含 scheduled_tool_observations，说明算法工具已经由 Runtime 调度执行；此时不要再次调用算法工具，只解释这些结构化观察结果
 - execute_python_analysis 只在临时工作区运行；工作区文件的产物写入工作区 output，用户上传文件的产物写入应用同级 output；不要执行 shell、网络访问、系统管理或访问其他路径
-- 项目文件编辑、生成和删除必须先调用对应工作区工具创建预览；不要先向用户索要“确认生成”“同意”等文字，也不要自定义二次确认流程。Qt 客户端会根据 operation_id 自动显示“点击确认执行”链接，用户点击链接后系统会完成确认操作
+- 项目代码文件的创建、编辑和删除必须先调用对应工作区工具创建预览；不要先向用户索要“确认生成”“同意”等文字，也不要自定义二次确认流程。Qt 客户端会根据 operation_id 自动显示“点击确认执行”链接，用户点击链接后系统会完成确认操作
 - 对话回复中不要复制完整文件原文、代码、检索命中内容或差异内容，只汇报文件操作状态、数量、路径和结果摘要；用户需要查看原文时引导其使用右侧“打开文件”面板
 
 你可以使用的工具：
@@ -506,6 +533,7 @@ class AgentService:
 - text_mining_tool: 文本挖掘相关操作
 - machine_learning_tool: 机器学习建模
 - visualization_tool: 图表生成
+- analysis_tool: 当前项目工作区的文件检索、代码读取、代码创建、代码编辑和确认操作
 
 请根据用户的需求，智能地选择合适的工具并执行。"""
         

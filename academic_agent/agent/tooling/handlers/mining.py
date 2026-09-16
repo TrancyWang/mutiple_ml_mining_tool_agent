@@ -47,3 +47,25 @@ def keywords(**kwargs: Any) -> dict[str, Any]:
     return text_mining_service.keywords(
         kwargs.get("text_column"), int(kwargs.get("top_n", 10))
     )
+
+
+def entities(**kwargs: Any) -> dict[str, Any]:
+    from academic_agent.application.services.text_mining_service import text_mining_service
+
+    return text_mining_service.entities(
+        kwargs.get("text_column"), int(kwargs.get("batch_size", 8)),
+        int(kwargs.get("max_texts", 200)), provider=kwargs.get("provider"),
+        model=kwargs.get("model"), base_url=kwargs.get("base_url"),
+        api_key=kwargs.get("api_key"),
+    )
+
+
+def relations(**kwargs: Any) -> dict[str, Any]:
+    from academic_agent.application.services.text_mining_service import text_mining_service
+
+    return text_mining_service.relations(
+        kwargs.get("text_column"), int(kwargs.get("batch_size", 8)),
+        int(kwargs.get("max_texts", 200)), provider=kwargs.get("provider"),
+        model=kwargs.get("model"), base_url=kwargs.get("base_url"),
+        api_key=kwargs.get("api_key"),
+    )

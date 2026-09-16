@@ -1,4 +1,4 @@
-"""Qt 客户端的本地模型目录设置。"""
+"""Qt 客户端的文本挖掘模型库设置。"""
 
 from __future__ import annotations
 
@@ -25,8 +25,11 @@ class ModelMixin:
 
     def _build_model_path_dialog(
         self,
-        title: str = "设置本地模型目录",
-        description: str = "填写模型根目录，或选择包含 bge-cn 子目录的文件夹：",
+        title: str = "设置模型库根目录",
+        description: str = (
+            "请选择包含 bge-cn、multilingual-sentiment-analysis 等子目录的 "
+            "pretrain_models 文件夹："
+        ),
     ) -> QDialog:
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
@@ -60,16 +63,19 @@ class ModelMixin:
         def update_hint() -> None:
             root = normalize_model_root(path_edit.text())
             if root is None:
-                hint.setText("未指定：将使用默认模型目录。")
+                hint.setText("未指定：将使用默认模型库目录。")
                 return
             status = model_components(root)
-            missing = []
-            if not status["has_bge"]:
-                missing.append("bge-cn")
-            if not status["has_sentiment"]:
-                missing.append("xuyuan-trial-sentiment-bert-chinese（可选）")
-            suffix = "；缺少：" + "、".join(missing) if missing else "；BGE 和情感模型均已找到"
-            hint.setText(f"模型根目录：{root}{suffix}")
+            components = (
+                ("BGE 向量模型", status["has_bge"]),
+                ("通用五分类模型", status["has_general_sentiment"]),
+                ("中文八分类情绪模型", status["has_chinese_sentiment"]),
+            )
+            component_lines = "\n".join(
+                f"{'✓' if found else '○'} {name}：{'已找到' if found else '未找到'}"
+                for name, found in components
+            )
+            hint.setText(f"模型库根目录：{root}\n{component_lines}")
 
         path_edit.textChanged.connect(update_hint)
         update_hint()
@@ -79,7 +85,7 @@ class ModelMixin:
     def _choose_model_directory(self, path_edit: QLineEdit) -> None:
         selected = QFileDialog.getExistingDirectory(
             self,
-            "选择本地模型根目录",
+            "选择模型库根目录（pretrain_models）",
             path_edit.text().strip() or str(Path.home()),
         )
         if selected:
@@ -87,8 +93,11 @@ class ModelMixin:
 
     def configure_model_directory(
         self,
-        title: str = "设置本地模型目录",
-        description: str = "填写模型根目录，或选择包含 bge-cn 子目录的文件夹：",
+        title: str = "设置模型库根目录",
+        description: str = (
+            "请选择包含 bge-cn、multilingual-sentiment-analysis 等子目录的 "
+            "pretrain_models 文件夹："
+        ),
     ) -> bool:
         if not self.ensure_authenticated():
             return False
@@ -103,8 +112,9 @@ class ModelMixin:
         if not status["has_bge"]:
             QMessageBox.warning(
                 self,
-                "模型目录无效",
-                f"目录中没有找到 bge-cn：\n{root / 'bge-cn'}\n\n请重新选择模型根目录。",
+                "模型库目录不完整",
+                f"目录中没有找到 BGE 向量模型：\n{root / 'bge-cn'}\n\n"
+                "请选择包含 bge-cn 子目录的 pretrain_models 文件夹。",
             )
             return False
         apply_model_root(root)
@@ -114,16 +124,16 @@ class ModelMixin:
 
         vector_store.set_model_root(root)
         source_video_text_adapter.set_model_root(root)
-        self.statusBar().showMessage(f"本地模型目录已设置：{root}")
+        self.statusBar().showMessage(f"模型库根目录已设置：{root}")
         return True
 
     def configure_text_mining_model(self) -> bool:
         """在执行文本挖掘前，让用户补充算法模型目录。"""
         return self.configure_model_directory(
-            title="设置文本挖掘模型地址",
+            title="设置文本挖掘模型库",
             description=(
-                "文本挖掘算法需要本地模型目录。请填写或选择包含 "
-                "bge-cn 子目录的文件夹："
+                "文本挖掘算法需要模型库。请选择包含 bge-cn 子目录的 "
+                "pretrain_models 文件夹；通用情感模型也应放在此目录内。"
             ),
         )
 
@@ -132,7 +142,9 @@ class ModelMixin:
             return False
         current = str(self.model_settings.value("sentiment_model_path", "") or "")
         path = QFileDialog.getExistingDirectory(
-            self, "选择情感分析模型目录", current or str(Path.home())
+            self,
+            "选择中文八分类情绪模型目录",
+            current or str(Path.home()),
         )
         if not path:
             return False
@@ -140,10 +152,18 @@ class ModelMixin:
         if not model_path.is_dir():
             QMessageBox.warning(self, "模型目录无效", f"目录不存在：\n{model_path}")
             return False
+        if not (model_path / "config.json").is_file():
+            QMessageBox.warning(
+                self,
+                "模型目录无效",
+                "这里应选择具体的中文八分类模型文件夹，并且目录中应包含 config.json。\n\n"
+                "例如：pretrain_models/xuyuan-trial-sentiment-bert-chinese",
+            )
+            return False
         from academic_agent.integrations.video_text_adapter import source_video_text_adapter
         source_video_text_adapter.set_sentiment_model_path(model_path)
         self.model_settings.setValue("sentiment_model_path", str(model_path))
-        self.statusBar().showMessage(f"情感分析模型地址已设置：{model_path}")
+        self.statusBar().showMessage(f"中文八分类情绪模型已设置：{model_path}")
         return True
 
     def reset_sentiment_model(self) -> None:
@@ -152,7 +172,7 @@ class ModelMixin:
         from academic_agent.integrations.video_text_adapter import source_video_text_adapter
         source_video_text_adapter.reset_sentiment_model_path()
         self.model_settings.remove("sentiment_model_path")
-        self.statusBar().showMessage("已恢复默认情感分析模型")
+        self.statusBar().showMessage("已清除单独指定的中文八分类模型，将使用模型库中的默认模型")
 
     def configure_custom_dictionary(self) -> bool:
         if not self.ensure_authenticated():
@@ -189,4 +209,4 @@ class ModelMixin:
 
         vector_store.reset_model_root()
         source_video_text_adapter.reset_model_root()
-        self.statusBar().showMessage("已恢复默认模型目录")
+        self.statusBar().showMessage("已恢复默认模型库根目录")

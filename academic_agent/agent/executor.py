@@ -29,6 +29,7 @@ def emit_tool_log(tool: str, message: str, level: str = "info") -> None:
 _ANALYSIS_TOOLS = {
     "load_data", "preprocess_text", "data_statistics", "data_preprocess",
     "feature_processing", "sentiment_analysis", "text_clustering", "extract_keywords",
+    "entity_recognition", "relation_extraction",
     "regression", "classification", "causal_inference", "document_rag",
 }
 
@@ -45,7 +46,7 @@ def _analysis_input_log(name: str, params: dict[str, Any]) -> str:
     for key in (
         "text_column", "algorithm", "n_clusters", "eps", "min_samples", "top_n",
         "target_var", "feature_vars", "model_type", "method", "test_size",
-        "multiple_folds", "treatment_var", "outcome_var",
+        "multiple_folds", "treatment_var", "outcome_var", "batch_size", "max_texts",
     ):
         value = params.get(key)
         if value is not None and value != "" and value != []:

@@ -23,6 +23,21 @@ REGRESSION_TOOLS = {
     "xgboost": ("academic_agent.algorithms.machine_learning.regression.xgboost_tool", "XGBoostRegressionTool"),
     "lightgbm": ("academic_agent.algorithms.machine_learning.regression.lightgbm_tool", "LightGBMRegressionTool"),
     "catboost": ("academic_agent.algorithms.machine_learning.regression.catboost_tool", "CatBoostRegressionTool"),
+    "elastic_net": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularRegressionTool"),
+    "huber": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularRegressionTool"),
+    "extra_trees": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularRegressionTool"),
+    "knn": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularRegressionTool"),
+}
+
+CLASSIFICATION_MODELS = {
+    # 保留原有 SVM 工具的 SHAP 和输出行为；新增模型使用统一表格适配器。
+    "svm": ("academic_agent.algorithms.machine_learning.regression.svm_tool", "SVMClassificationTool"),
+    "logistic": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularClassificationTool"),
+    "random_forest": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularClassificationTool"),
+    "extra_trees": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularClassificationTool"),
+    "gradient_boosting": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularClassificationTool"),
+    "knn": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularClassificationTool"),
+    "naive_bayes": ("academic_agent.algorithms.machine_learning.tabular_tool", "TabularClassificationTool"),
 }
 
 CAUSAL_TOOLS = {
@@ -116,7 +131,15 @@ class MachineLearningTools:
                 _prepare_plot_cache()
                 tool_class = _load_class(REGRESSION_TOOLS[model_type])
                 self._runtime_log("regression", f"加载 {tool_class.__name__}；样本={len(data)}；交叉训练={multiple_folds} 次")
-                tool = tool_class(str(input_path), multiple_folder=int(multiple_folds), save_dir=str(run_dir), shap_save_dir=str(run_dir))
+                init_kwargs = {
+                    "multiple_folder": int(multiple_folds),
+                    "save_dir": str(run_dir),
+                    "shap_save_dir": str(run_dir),
+                }
+                if model_type in {"elastic_net", "huber", "extra_trees", "knn"}:
+                    init_kwargs["model_type"] = model_type
+                    init_kwargs["test_size"] = float(test_size)
+                tool = tool_class(str(input_path), **init_kwargs)
                 tool.run_multiple_training()
                 self._runtime_log("regression", "模型训练完成，正在生成指标、SHAP 和诊断图")
                 workbook_name = Path(output_path).name if output_path else f"{model_type}_shap_importance.xlsx"
@@ -155,29 +178,42 @@ class MachineLearningTools:
         test_size: float = 0.2, save_result: bool = True,
         output_path: Optional[str] = None, multiple_folds: int = 5,
     ) -> Dict[str, Any]:
-        """Invoke the project's SVMClassificationTool."""
+        """Invoke one of the project's tabular classification algorithms."""
         try:
-            if str(model_type).lower() != "svm":
-                return {"success": False, "error": "当前项目分类算法仅实现 SVMClassificationTool；请使用 model_type=svm。"}
+            model_type = str(model_type).lower()
+            if model_type not in CLASSIFICATION_MODELS:
+                return {"success": False, "error": f"当前项目不包含分类模型 {model_type}；可用模型: {sorted(CLASSIFICATION_MODELS)}"}
             data = self._selected_data([*feature_vars, target_var])
-            run_dir = self._create_run_dir("classification_svm")
+            run_dir = self._create_run_dir(f"classification_{model_type}")
             run_dir.mkdir(parents=True, exist_ok=True)
             before = set(run_dir.iterdir())
             temporary, input_path = self._temporary_excel(data)
             try:
                 _prepare_plot_cache()
-                tool_class = _load_class(("academic_agent.algorithms.machine_learning.regression.svm_tool", "SVMClassificationTool"))
-                self._runtime_log("classification", f"加载 SVMClassificationTool；样本={len(data)}；交叉训练={multiple_folds} 次")
-                tool = tool_class(str(input_path), multiple_folder=int(multiple_folds), save_dir=str(run_dir), shap_save_dir=str(run_dir))
+                tool_class = _load_class(CLASSIFICATION_MODELS[model_type])
+                self._runtime_log("classification", f"加载 {model_type}；样本={len(data)}；交叉训练={multiple_folds} 次")
+                if model_type == "svm":
+                    tool = tool_class(
+                        str(input_path), multiple_folder=int(multiple_folds),
+                        save_dir=str(run_dir), shap_save_dir=str(run_dir),
+                    )
+                else:
+                    tool = tool_class(
+                        str(input_path), model_type=model_type,
+                        multiple_folder=int(multiple_folds),
+                        test_size=float(test_size), save_dir=str(run_dir), shap_save_dir=str(run_dir),
+                    )
                 tool.run_multiple_training()
                 self._runtime_log("classification", "模型训练完成，正在生成分类指标和评估图")
-                workbook_name = Path(output_path).name if output_path else "svm_shap_importance.xlsx"
+                workbook_name = Path(output_path).name if output_path else (
+                    "svm_shap_importance.xlsx" if model_type == "svm" else f"{model_type}_feature_importance.xlsx"
+                )
                 tool.save_shap_importance(output_file=workbook_name, save_dir=str(run_dir))
                 warnings = []
                 for method_name, filename in (
-                    ("plot_confusion_matrix", "svm_confusion_matrix.png"),
-                    ("plot_classification_report", "svm_classification_report.png"),
-                    ("plot_feature_importance", "svm_feature_importance.png"),
+                    ("plot_confusion_matrix", f"{model_type}_confusion_matrix.png"),
+                    ("plot_classification_report", f"{model_type}_classification_report.png"),
+                    ("plot_feature_importance", f"{model_type}_feature_importance.png"),
                 ):
                     try:
                         getattr(tool, method_name)(output_file=filename, save_dir=str(run_dir))
@@ -189,8 +225,8 @@ class MachineLearningTools:
             workbook = next((path for path in files if path.suffix.lower() == ".xlsx"), None)
             images = [path for path in files if path.suffix.lower() in {".png", ".jpg", ".jpeg"}]
             return {
-                "success": True, "message": "已调用项目内 SVMClassificationTool 完成分类分析。",
-                "model_type": "svm",
+                "success": True, "message": f"已调用项目内 {tool_class.__name__} 完成 {model_type} 分类分析。",
+                "model_type": model_type,
                 "metrics": {"accuracy": float(tool.accuracy_mean), "precision": float(tool.precision_mean), "recall": float(tool.recall_mean), "f1": float(tool.f1_mean)},
                 "trainings": int(multiple_folds), "sample_size": len(data),
                 "output_file": str(workbook) if workbook else None,

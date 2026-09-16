@@ -88,6 +88,27 @@ def sentiment_configuration() -> dict[str, Any]:
     }
 
 
+def information_extraction_configuration(kind: str) -> dict[str, Any]:
+    label = "实体识别" if kind == "entity_recognition" else "关系抽取"
+    return {
+        "kind": kind,
+        "title": f"确认{label}方案",
+        "description": f"使用可配置的 OpenAI-compatible 大模型完成{label}，结果会写入 Excel 工作簿。",
+        "default_algorithm": "llm",
+        "options": [
+            _option(
+                "llm",
+                f"大模型{label}（推荐）",
+                "输出结构化 JSON，并保留文本、实体/三元组和模型信息。",
+                [
+                    _parameter("batch_size", "每批文本数", "int", 8, 1, 32),
+                    _parameter("max_texts", "最多处理文本数", "int", 200, 1, 5000),
+                ],
+            )
+        ],
+    }
+
+
 def machine_learning_configuration(task: str) -> dict[str, Any]:
     common_parameters = [
         _parameter("test_size", "测试集比例", "float", 0.2, 0.1, 0.5, 0.05),
@@ -96,6 +117,12 @@ def machine_learning_configuration(task: str) -> dict[str, Any]:
     if task == "classification":
         options = [
             _option("svm", "SVM（支持向量机）", "当前项目已验证的分类实现，适合中小规模分类数据。", common_parameters),
+            _option("logistic", "Logistic 回归", "可解释性较强，适合二分类或多分类基线模型。", common_parameters),
+            _option("random_forest", "随机森林", "适合非线性关系和特征交互，抗过拟合能力较好。", common_parameters),
+            _option("extra_trees", "ExtraTrees 极端随机树", "比随机森林随机性更强，适合快速建立非线性基线。", common_parameters),
+            _option("gradient_boosting", "Gradient Boosting", "逐步拟合误差，适合中小规模结构化数据。", common_parameters),
+            _option("knn", "KNN", "基于邻近样本进行分类，适合尺度统一后的中小规模数据。", common_parameters),
+            _option("naive_bayes", "朴素贝叶斯", "训练速度快，适合作为概率分类基线。", common_parameters),
         ]
         title = "确认分类算法与参数"
         description = "请选择分类模型及评估参数。"
@@ -119,6 +146,10 @@ def machine_learning_configuration(task: str) -> dict[str, Any]:
             _option("xgboost", "XGBoost 回归", "适合结构化数据的高性能梯度提升模型。", common_parameters),
             _option("lightgbm", "LightGBM 回归", "适合较大规模结构化数据的梯度提升模型。", common_parameters),
             _option("catboost", "CatBoost 回归", "对类别特征较友好的梯度提升模型。", common_parameters),
+            _option("elastic_net", "ElasticNet 回归", "结合 L1/L2 正则化，适合高维且存在共线性的特征。", common_parameters),
+            _option("huber", "Huber 鲁棒回归", "对异常值不敏感，适合含有少量离群点的连续目标。", common_parameters),
+            _option("extra_trees", "ExtraTrees 回归", "用极端随机树捕捉复杂非线性关系。", common_parameters),
+            _option("knn", "KNN 回归", "根据邻近样本预测连续目标，适合局部规律明显的数据。", common_parameters),
         ]
         title = "确认回归算法与参数"
         description = "请选择回归模型及评估参数。"
@@ -135,6 +166,10 @@ def configuration_for_query(query: str, route: str) -> dict[str, Any] | None:
     """根据 Planner 已确定的路由识别需要用户确认的算法类型。"""
     text = str(query).lower()
     if route == "data":
+        if any(word in text for word in ("实体识别", "命名实体", "ner", "named entity", "entity recognition")):
+            return information_extraction_configuration("entity_recognition")
+        if any(word in text for word in ("关系抽取", "关系识别", "relation extraction", "knowledge graph")):
+            return information_extraction_configuration("relation_extraction")
         if "聚类" in text or "cluster" in text:
             return text_clustering_configuration()
         if "情感" in text or "情绪" in text or "sentiment" in text:

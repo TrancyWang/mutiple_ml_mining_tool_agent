@@ -1,7 +1,8 @@
 """本地模型目录配置。
 
 模型不必随 Qt 客户端一起发布。用户可以把模型放在任意目录，目录结构
-建议为 ``<模型根目录>/bge-cn`` 和可选的情感模型目录。
+建议为 ``<模型库根目录>/bge-cn``、``multilingual-sentiment-analysis`` 和
+``xuyuan-trial-sentiment-bert-chinese``。
 """
 
 from __future__ import annotations
@@ -46,13 +47,19 @@ def model_components(root: str | Path | None = None) -> dict[str, Path | bool]:
     """返回模型目录状态，用于界面提示和启动诊断。"""
     model_root = normalize_model_root(root) or default_model_root()
     bge = model_root / "bge-cn"
-    sentiment = model_root / "xuyuan-trial-sentiment-bert-chinese"
+    general_sentiment = model_root / "multilingual-sentiment-analysis"
+    chinese_sentiment = model_root / "xuyuan-trial-sentiment-bert-chinese"
     return {
         "root": model_root,
         "bge": bge,
-        "sentiment": sentiment,
+        "general_sentiment": general_sentiment,
+        "chinese_sentiment": chinese_sentiment,
+        # 保留旧键，避免已有调用方失效。
+        "sentiment": chinese_sentiment,
         "has_bge": bge.is_dir(),
-        "has_sentiment": sentiment.is_dir(),
+        "has_general_sentiment": general_sentiment.is_dir(),
+        "has_chinese_sentiment": chinese_sentiment.is_dir(),
+        "has_sentiment": chinese_sentiment.is_dir(),
     }
 
 
