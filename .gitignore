@@ -76,3 +76,5 @@ academic_agent.log
 # OS
 .DS_Store
 Thumbs.db
+/resources/dicts/
+
