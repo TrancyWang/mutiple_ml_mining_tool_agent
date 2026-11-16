@@ -25,8 +25,7 @@ from academic_agent.infrastructure.analysis_artifacts import (
     write_workbook,
 )
 
-# 本项目算法层统一放在 algorithms，避免与源项目 video_text_mutiplemodal_agent
-# 的 src_codes 目录混淆。
+# 本项目算法层统一放在 algorithms，源项目实现通过新版 src_code 包按需加载。
 BASE_DIR = Path(__file__).parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -43,7 +42,7 @@ class TextMiningTools:
         self.current_data = None
         self.current_file_path = None
         self.current_source_scope = "upload"
-        self.engine_name = "video_text_mutiplemodal_agent"
+        self.engine_name = "text_mining_tools_agent_client_cpu"
 
     def _get_output_path(self, original_name: str, suffix: str) -> str:
         """生成带时间戳的唯一输出文件路径"""
@@ -228,8 +227,8 @@ class TextMiningTools:
                 "output_file": output_path,
                 "preview": self.current_data[[text_column, new_col_name]].head(5).to_dict('records'),
                 "processed_columns": [new_col_name],
-                "method": "video_text_mutiplemodal_agent.Data_PreProcessor",
-                "implementation": "text_processor_subagent_stage_3.common.data_preprocess.Data_PreProcessor",
+                "method": "text_mining_tools_agent_client_cpu.Data_PreProcessor",
+                "implementation": "src_code.preprocessing.data_preprocess.Data_PreProcessor",
                 "stopwords_removed": True  # 默认为True，因为Data_PreProcessor默认会加载
             }
             
@@ -284,7 +283,7 @@ class TextMiningTools:
                     "artifacts": artifact_result([output_path]),
                     "preview": source_compatible.head(5).to_dict('records'),
                     "sentiment_distribution": source_compatible['sentiment'].value_counts().to_dict(),
-                    "model": "video_text_mutiplemodal_agent/sentiment_general_analysis",
+                    "model": "text_mining_tools_agent_client_cpu/sentiment_general_analysis",
                     "implementation": "academic_agent.integrations.video_text_adapter.SourceVideoTextAdapter.general_sentiment",
                 }
             if mode != "chinese":
@@ -332,8 +331,8 @@ class TextMiningTools:
                 "artifacts": artifact_result([output_path]),
                 "preview": source_compatible.head(5).to_dict('records'),
                 "sentiment_distribution": emotion_counts,
-                "model": "video_text_mutiplemodal_agent/chinese_sentiment_bert_analysis",
-                "implementation": "text_processor_subagent_stage_3.sentiment.chinese_sentiment_bert_analysis.predict_emotion",
+                "model": "text_mining_tools_agent_client_cpu/chinese_sentiment_bert_analysis",
+                "implementation": "src_code.text_mining.sentiment.chinese_sentiment_bert_analysis.predict_emotion",
             }
             
         except Exception as e:
@@ -344,7 +343,13 @@ class TextMiningTools:
                        n_clusters: int = 5,
                        algorithm: str = "kmeans",
                        eps: float = 0.5,
-                       min_samples: int = 5) -> Dict[str, Any]:
+                       min_samples: int = 5,
+                       *,
+                       linkage: str = "ward",
+                       covariance_type: str = "full",
+                       damping: float = 0.5,
+                       bandwidth: float | None = None,
+                       max_iter: int = 300) -> Dict[str, Any]:
         """BGE 文本聚类，保留源项目 cid/text/cluster_id 主结果结构。"""
         try:
             if self.current_data is None:
@@ -362,6 +367,7 @@ class TextMiningTools:
             if not texts:
                 return {"success": False, "error": "没有有效文本数据"}
 
+            algorithm = source_video_text_adapter._normalize_cluster_algorithm(algorithm)
             self._runtime_log(
                 "text_clustering",
                 f"加载 BGE 与 {algorithm} 聚类算法；文本={len(texts)} 条；聚类数={n_clusters}",
@@ -373,6 +379,11 @@ class TextMiningTools:
                 algorithm=algorithm,
                 eps=eps,
                 min_samples=min_samples,
+                linkage=linkage,
+                covariance_type=covariance_type,
+                damping=damping,
+                bandwidth=bandwidth,
+                max_iter=max_iter,
             )
             self.current_data["cluster_id"] = pd.NA
             for _, row in clustered.iterrows():
@@ -435,7 +446,7 @@ class TextMiningTools:
                 "artifacts": artifact_result([excel_path, csv_path]),
                 "preview": source_compatible.head(5).to_dict('records'),
                 "algorithm": f"BGE/SentenceTransformer + {algorithm}",
-                "implementation": "text_processor_subagent_stage_3.common.textEmbedding.TextEmbedding + sklearn.cluster",
+                "implementation": "source TextEmbedding + sklearn.cluster",
                 "algorithm_name": str(algorithm).lower(),
                 "n_clusters": n_clusters,
                 "cluster_sizes": [int(cluster_counts.get(i, 0)) for i in sorted(cluster_counts)],
@@ -688,7 +699,7 @@ class TextMiningTools:
             
             group_column = next((column for column in ('New Cluster', 'cluster_id', 'cluster') if column in self.current_data.columns), None)
             id_column = self._detect_id_column()
-            method = "video_text_mutiplemodal_agent.TextKeyBert"
+            method = "text_mining_tools_agent_client_cpu.TextKeyBert"
             self._runtime_log(
                 "extract_keywords",
                 f"加载 KeyBERT 关键词算法；分组字段={group_column or '全文'}；TopN={top_n}",
@@ -717,7 +728,7 @@ class TextMiningTools:
                 "success": True,
                 "message": f"从 '{text_column}' 列中提取了 Top {top_n} 关键词。",
                 "method": method,
-                "implementation": "text_processor_subagent_stage_3.clustering.textKeyBert_cluster_sentence_fuse_agent.TextKeyBert",
+                "implementation": "src_code.text_mining.keyword_extractor.textKeyBert_cluster_sentence_fuse_pro.TextKeyBert",
                 "custom_dictionary": str(source_video_text_adapter.custom_dictionary_path) if source_video_text_adapter.custom_dictionary_path else None,
                 "output_file": str(output_path),
                 "artifacts": artifact_result([output_path]),

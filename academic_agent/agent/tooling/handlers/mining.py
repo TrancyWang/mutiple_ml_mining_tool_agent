@@ -26,6 +26,11 @@ def clustering(**kwargs: Any) -> dict[str, Any]:
         kwargs.get("text_column"), int(kwargs.get("n_clusters", 5)),
         kwargs.get("algorithm", "kmeans"), float(kwargs.get("eps", 0.5)),
         int(kwargs.get("min_samples", 5)),
+        linkage=kwargs.get("linkage", "ward"),
+        covariance_type=kwargs.get("covariance_type", "full"),
+        damping=float(kwargs.get("damping", 0.5)),
+        bandwidth=kwargs.get("bandwidth"),
+        max_iter=int(kwargs.get("max_iter", 300)),
     )
 
 

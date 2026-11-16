@@ -36,12 +36,16 @@ class SQLiteConversationStore:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(str(self.db_path), timeout=15)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+        # journal_mode is a database-level setting. Reapplying WAL on every
+        # read connection can itself wait for a writer and freeze the Qt
+        # event loop while a workspace is being switched.
+        connection.execute("PRAGMA busy_timeout=15000")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -67,6 +71,66 @@ class SQLiteConversationStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_workspace_projects_recent
                     ON workspace_projects(user_id, last_used_at DESC);
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    run_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    workspace_path TEXT NOT NULL DEFAULT '',
+                    workspace_id TEXT NOT NULL DEFAULT '',
+                    request_json TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    board_json TEXT NOT NULL,
+                    messages_json TEXT NOT NULL,
+                    runtime_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_recovery
+                    ON agent_runs(user_id, status, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS agent_run_events (
+                    event_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, seq)
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_run_events_run
+                    ON agent_run_events(run_id, seq ASC);
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    workspace_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    workspace_path TEXT NOT NULL,
+                    output_path TEXT NOT NULL DEFAULT '',
+                    permission_mode TEXT NOT NULL DEFAULT 'read_only',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_workspaces_user_time
+                    ON workspaces(user_id, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS workspace_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL DEFAULT '',
+                    task_id TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL,
+                    artifact_type TEXT NOT NULL DEFAULT 'file',
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(workspace_id, path, sha256)
+                );
+                CREATE INDEX IF NOT EXISTS idx_workspace_artifacts_lookup
+                    ON workspace_artifacts(workspace_id, updated_at DESC);
                 CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(
                     message_id UNINDEXED,
                     user_id UNINDEXED,
@@ -79,6 +143,14 @@ class SQLiteConversationStore:
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(conversation_messages)").fetchall()
             }
+            run_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()
+            }
+            if "workspace_id" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN workspace_id TEXT NOT NULL DEFAULT ''"
+                )
             if "workspace_path" not in columns:
                 connection.execute(
                     "ALTER TABLE conversation_messages ADD COLUMN workspace_path TEXT NOT NULL DEFAULT ''"
@@ -136,6 +208,349 @@ class SQLiteConversationStore:
                 (str(message_id), owner, str(role), str(content)),
             )
             return message_id
+
+    @staticmethod
+    def _decode_json(value: str | None, default: Any) -> Any:
+        try:
+            return json.loads(value or "")
+        except (TypeError, json.JSONDecodeError):
+            return default
+
+    @classmethod
+    def _row_to_agent_run(cls, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "run_id": str(row["run_id"]),
+            "user_id": str(row["user_id"]),
+            "session_id": str(row["session_id"]),
+            "workspace_path": str(row["workspace_path"] or ""),
+            "workspace_id": str(row["workspace_id"] or "") if "workspace_id" in row.keys() else "",
+            "request": cls._decode_json(row["request_json"], {}),
+            "plan": cls._decode_json(row["plan_json"], {}),
+            "board": cls._decode_json(row["board_json"], {}),
+            "messages": cls._decode_json(row["messages_json"], []),
+            "runtime": cls._decode_json(row["runtime_json"], {}),
+            "status": str(row["status"]),
+            "last_error": str(row["last_error"] or ""),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "completed_at": row["completed_at"],
+        }
+
+    def save_agent_run(
+        self,
+        run_id: str,
+        user_id: str,
+        session_id: str,
+        workspace_path: str | None,
+        request: dict[str, Any],
+        plan: dict[str, Any],
+        board: dict[str, Any],
+        messages: list[dict[str, Any]],
+        runtime: dict[str, Any] | None = None,
+        status: str = "running",
+        last_error: str = "",
+    ) -> None:
+        """保存一个可恢复的 Agent 检查点；同一 run_id 更新同一条记录。"""
+        now = datetime.now(timezone.utc).isoformat()
+        project = str(Path(workspace_path).expanduser().resolve()) if workspace_path else ""
+        workspace_id = str(request.get("workspace_id") or "")
+        payload = (
+            str(run_id),
+            str(user_id),
+            str(session_id),
+            project,
+            workspace_id,
+            json.dumps(request, ensure_ascii=False, default=str),
+            json.dumps(plan, ensure_ascii=False, default=str),
+            json.dumps(board, ensure_ascii=False, default=str),
+            json.dumps(messages, ensure_ascii=False, default=str),
+            json.dumps(runtime or {}, ensure_ascii=False, default=str),
+            str(status),
+            str(last_error or ""),
+            now,
+            now,
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_runs (
+                    run_id, user_id, session_id, workspace_path, workspace_id,
+                    request_json, plan_json, board_json, messages_json,
+                    runtime_json, status, last_error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    session_id = excluded.session_id,
+                    workspace_path = excluded.workspace_path,
+                    workspace_id = excluded.workspace_id,
+                    request_json = excluded.request_json,
+                    plan_json = excluded.plan_json,
+                    board_json = excluded.board_json,
+                    messages_json = excluded.messages_json,
+                    runtime_json = excluded.runtime_json,
+                    status = excluded.status,
+                    last_error = excluded.last_error,
+                    updated_at = excluded.updated_at,
+                    completed_at = CASE
+                        WHEN excluded.status = 'completed' THEN excluded.updated_at
+                        ELSE NULL
+                    END
+                """,
+                payload,
+            )
+
+    def get_agent_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_runs WHERE run_id = ?",
+                (str(run_id),),
+            ).fetchone()
+        return self._row_to_agent_run(row) if row is not None else None
+
+    def ensure_workspace(
+        self,
+        workspace_id: str,
+        user_id: str,
+        session_id: str,
+        workspace_path: str | Path,
+        output_path: str | Path | None = None,
+        permission_mode: str = "read_only",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or refresh the durable identity for a task workspace."""
+        now = datetime.now(timezone.utc).isoformat()
+        root = str(Path(workspace_path).expanduser().resolve())
+        output = str(Path(output_path).expanduser().resolve()) if output_path else str(Path(root) / "output")
+        payload = (
+            str(workspace_id), str(user_id), str(session_id), root, output,
+            str(permission_mode), "active",
+            json.dumps(metadata or {}, ensure_ascii=False, default=str), now, now,
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO workspaces (
+                    workspace_id, user_id, session_id, workspace_path, output_path,
+                    permission_mode, status, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    session_id = excluded.session_id,
+                    workspace_path = excluded.workspace_path,
+                    output_path = excluded.output_path,
+                    permission_mode = excluded.permission_mode,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+        return self.get_workspace(workspace_id) or {
+            "workspace_id": str(workspace_id),
+            "user_id": str(user_id),
+            "session_id": str(session_id),
+            "workspace_path": root,
+            "output_path": output,
+            "permission_mode": str(permission_mode),
+            "status": "active",
+            "metadata": metadata or {},
+        }
+
+    def get_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM workspaces WHERE workspace_id = ?",
+                (str(workspace_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        return {
+            "workspace_id": str(row["workspace_id"]),
+            "user_id": str(row["user_id"]),
+            "session_id": str(row["session_id"]),
+            "workspace_path": str(row["workspace_path"]),
+            "output_path": str(row["output_path"] or ""),
+            "permission_mode": str(row["permission_mode"] or "read_only"),
+            "status": str(row["status"] or "active"),
+            "metadata": metadata if isinstance(metadata, dict) else {},
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def register_workspace_artifact(
+        self,
+        workspace_id: str,
+        path: str | Path,
+        *,
+        run_id: str = "",
+        task_id: str = "",
+        artifact_type: str = "file",
+        sha256: str = "",
+        size_bytes: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Register a real output without copying its contents into SQLite."""
+        import uuid
+
+        now = datetime.now(timezone.utc).isoformat()
+        artifact_id = uuid.uuid4().hex
+        payload = (
+            artifact_id, str(workspace_id), str(run_id), str(task_id), str(path),
+            str(artifact_type), str(sha256), max(0, int(size_bytes)),
+            json.dumps(metadata or {}, ensure_ascii=False, default=str), now, now,
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO workspace_artifacts (
+                    artifact_id, workspace_id, run_id, task_id, path, artifact_type,
+                    sha256, size_bytes, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id, path, sha256) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    task_id = excluded.task_id,
+                    artifact_type = excluded.artifact_type,
+                    size_bytes = excluded.size_bytes,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM workspace_artifacts
+                WHERE workspace_id = ? AND path = ? AND sha256 = ?
+                """,
+                (str(workspace_id), str(path), str(sha256)),
+            ).fetchone()
+        return {
+            "artifact_id": str(row["artifact_id"]),
+            "workspace_id": str(row["workspace_id"]),
+            "run_id": str(row["run_id"]),
+            "task_id": str(row["task_id"]),
+            "path": str(row["path"]),
+            "artifact_type": str(row["artifact_type"]),
+            "sha256": str(row["sha256"]),
+            "size_bytes": int(row["size_bytes"] or 0),
+        }
+
+    def list_workspace_artifacts(self, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM workspace_artifacts
+                WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ?
+                """,
+                (str(workspace_id), max(1, int(limit))),
+            ).fetchall()
+        return [
+            {
+                "artifact_id": str(row["artifact_id"]),
+                "workspace_id": str(row["workspace_id"]),
+                "run_id": str(row["run_id"]),
+                "task_id": str(row["task_id"]),
+                "path": str(row["path"]),
+                "artifact_type": str(row["artifact_type"]),
+                "sha256": str(row["sha256"]),
+                "size_bytes": int(row["size_bytes"] or 0),
+            }
+            for row in rows
+        ]
+
+    def list_recoverable_agent_runs(
+        self,
+        user_id: str,
+        workspace_path: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """列出被正常完成标记之外的运行，供重启后继续。"""
+        statuses = ("prepared", "running", "interrupted")
+        query = (
+            "SELECT * FROM agent_runs WHERE user_id = ? "
+            "AND status IN (?, ?, ?)"
+        )
+        params: list[Any] = [str(user_id), *statuses]
+        if workspace_path is not None:
+            project = str(Path(workspace_path).expanduser().resolve()) if workspace_path else ""
+            query += " AND workspace_path = ?"
+            params.append(project)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._row_to_agent_run(row) for row in rows]
+
+    def finish_agent_run(self, run_id: str, status: str = "completed", last_error: str = "") -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE agent_runs
+                SET status = ?, last_error = ?, updated_at = ?,
+                    completed_at = CASE WHEN ? = 'completed' THEN ? ELSE completed_at END
+                WHERE run_id = ?
+                """,
+                (str(status), str(last_error or ""), now, str(status), now, str(run_id)),
+            )
+
+    def append_agent_event(
+        self,
+        run_id: str,
+        event_id: str,
+        seq: int,
+        event_type: str,
+        event: dict[str, Any],
+    ) -> None:
+        """追加一条脱敏后的运行事件；同一序号不会重复写入。"""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO agent_run_events
+                    (event_id, run_id, seq, event_type, event_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(event_id),
+                    str(run_id),
+                    int(seq),
+                    str(event_type),
+                    json.dumps(event, ensure_ascii=False, default=str),
+                    now,
+                ),
+            )
+
+    def list_agent_events(self, run_id: str, limit: int = 1000) -> list[dict[str, Any]]:
+        """按运行顺序读取事件，供 UI、诊断和 replay 使用。"""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_json FROM agent_run_events
+                WHERE run_id = ? ORDER BY seq ASC LIMIT ?
+                """,
+                (str(run_id), max(1, int(limit))),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                value = json.loads(row["event_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                result.append(value)
+        return result
+
+    def get_agent_event_cursor(self, run_id: str) -> int:
+        """返回某次运行已落盘事件的最后序号，用于恢复时继续追加。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) AS cursor FROM agent_run_events WHERE run_id = ?",
+                (str(run_id),),
+            ).fetchone()
+        return int(row["cursor"] or 0) if row is not None else 0
 
     def register_workspace(self, user_id: str, workspace_path: str | Path) -> None:
         """登记用户使用过的项目，即使项目暂时还没有产生对话。"""

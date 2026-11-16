@@ -16,9 +16,31 @@ class TextMiningService:
     def sentiment(self, text_column=None, mode="chinese"):
         return self.tool.sentiment_analysis(text_column, mode)
 
-    def clustering(self, text_column=None, n_clusters=5, algorithm="kmeans", eps=0.5, min_samples=5):
+    def clustering(
+        self,
+        text_column=None,
+        n_clusters=5,
+        algorithm="kmeans",
+        eps=0.5,
+        min_samples=5,
+        *,
+        linkage="ward",
+        covariance_type="full",
+        damping=0.5,
+        bandwidth=None,
+        max_iter=300,
+    ):
         return self.tool.text_clustering(
-            text_column, int(n_clusters), algorithm, float(eps), int(min_samples)
+            text_column,
+            int(n_clusters),
+            algorithm,
+            float(eps),
+            int(min_samples),
+            linkage=linkage,
+            covariance_type=covariance_type,
+            damping=float(damping),
+            bandwidth=bandwidth,
+            max_iter=int(max_iter),
         )
 
     def repair_clustering(self, text_column=None):

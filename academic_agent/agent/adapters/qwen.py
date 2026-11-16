@@ -5,6 +5,7 @@
 
 import os
 import json
+from copy import deepcopy
 from typing import Optional, Dict, Any, List
 
 from academic_agent.infrastructure.runtime_paths import configure_qwen_agent_workspace
@@ -41,7 +42,9 @@ except ImportError as exc:
         pass
 
 from academic_agent.agent.tooling.registry import tool_registry
-from academic_agent.agent.executor import tool_executor
+from academic_agent.agent.executor import current_execution_scope, tool_executor
+from academic_agent.agent.specialists import agent_catalog
+from academic_agent.agent.planning.planner import TaskPlanner
 from academic_agent.agent.runtime import AgentRuntime
 from academic_agent.agent.types import AgentRequest
 from academic_agent.agent.providers.config import (
@@ -83,7 +86,10 @@ class TextMiningToolWrapper(BaseTool):
             'algorithm': {
                 'type': 'string',
                 'description': '算法类型',
-                'enum': ['kmeans', 'agglomerative', 'dbscan'],
+                'enum': [
+                    'kmeans', 'minibatch_kmeans', 'agglomerative', 'dbscan',
+                    'gmm', 'spectral', 'birch', 'affinity_propagation', 'meanshift',
+                ],
                 'default': 'kmeans'
             },
             'n_clusters': {
@@ -357,7 +363,7 @@ class RegistryToolWrapper(BaseTool):
     """统一工具入口：自然语言 Agent 和 UI Tools 使用同一注册表。"""
 
     name = "analysis_tool"
-    description = "统一工具入口。先选择 action，再提供 params；支持数据分析、可视化、当前项目工作区的 Glob/Grep/Read/Write/Edit/Delete。write_project_file 用于在当前工作区创建或覆盖代码文件，generate_project_file 用于把分析文档写入 output 目录；必要时可在临时工作区执行受控 Python 分析代码。调用工作区生成、写入、编辑或删除工具会先创建待确认预览，确认由 Qt 对话框中的可点击链接完成。"
+    description = "统一工具入口。先选择 action，再提供 params；支持数据分析、可视化、Skill 安装，以及当前项目工作区的 Glob/Grep/Read/Write/Edit/Delete。write_project_file 用于在当前工作区创建或覆盖代码文件，generate_project_file 用于把分析文档写入 output 目录；必要时可在临时工作区执行受控 Python 分析代码。调用工作区生成、写入、编辑或删除工具会先创建待确认预览，确认由 Qt 对话框中的可点击链接完成。"
     parameters = {
         "type": "object",
         "properties": {
@@ -384,6 +390,34 @@ class RegistryToolWrapper(BaseTool):
             return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
 
 
+class SpecialistToolWrapper(RegistryToolWrapper):
+    """每个实例只向模型展示当前专业任务可用的 action。"""
+
+    def __init__(self, allowed_tools):
+        self.allowed_tools = frozenset(
+            name for name in allowed_tools if tool_registry.get(name) is not None
+        )
+        self.parameters = deepcopy(RegistryToolWrapper.parameters)
+        self.parameters["properties"]["action"]["enum"] = sorted(self.allowed_tools)
+        self.description = "当前专业 Agent 的工具入口。可用操作：" + "；".join(
+            f"{name}: {tool_registry.get(name).description}" for name in sorted(self.allowed_tools)
+        )
+        super().__init__()
+
+    def call(self, params: str, **kwargs) -> str:
+        try:
+            payload = json.loads(params) if isinstance(params, str) else params
+            action = payload.get("action")
+            if action not in self.allowed_tools:
+                return json.dumps({
+                    "success": False, "denied": True,
+                    "error": f"当前专业 Agent 不允许调用工具：{action}",
+                }, ensure_ascii=False)
+            return super().call(payload, **kwargs)
+        except (TypeError, ValueError, AttributeError) as exc:
+            return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+
+
 class AgentService:
     """Qwen Agent 服务"""
     
@@ -392,6 +426,7 @@ class AgentService:
         self.agent = None
         self.chat_agent = None
         self.planning_agent = None
+        self.specialist_agents: dict[tuple[str, tuple[str, ...]], Any] = {}
         self.llm_config: Dict[str, Any] = {}
         # Qt 客户端不能直接把终端 traceback 展示给用户，因此保留最近一次
         # 初始化失败的可读原因，供桌面端提示和日志使用。
@@ -454,6 +489,28 @@ class AgentService:
             name="AcademicPlanningAssistant",
         )
         return self.planning_agent
+
+    def _get_execution_agent(self) -> Any:
+        """按当前分工和权限创建独立 Assistant，复用用户选择的模型配置。"""
+        scope = current_execution_scope()
+        if scope is not None and scope.plan.route.value == "chat":
+            return self._get_chat_agent()
+        if scope is None or not scope.current_agent_id:
+            return self.agent
+        definition = agent_catalog.get(scope.current_agent_id) or agent_catalog.coordinator
+        allowed = tuple(sorted(set(scope.allowed_tools or ()).intersection(definition.tools)))
+        key = (definition.id, allowed)
+        if key not in self.specialist_agents:
+            if len(self.specialist_agents) >= 64:
+                self.specialist_agents.clear()
+            self.specialist_agents[key] = Assistant(
+                llm=self.llm_config,
+                function_list=[SpecialistToolWrapper(allowed)] if allowed else [],
+                system_message=definition.as_prompt(),
+                name=f"Academic_{definition.id}",
+                description=definition.description,
+            )
+        return self.specialist_agents[key]
     
     def init_agent(self,
                    model_name: Optional[str] = None,
@@ -494,6 +551,7 @@ class AgentService:
                     f"@ {llm_config.get('model_server', 'N/A')}"
                 )
             self.llm_config = dict(llm_config)
+            self.specialist_agents.clear()
         
             # 系统提示词
             system_prompt = """你是一个专业的文本挖掘和机器学习助手，具备以下能力：
@@ -506,6 +564,8 @@ class AgentService:
 5. **文档 RAG**：对用户上传或当前工作区文档进行结构化解析、混合检索，并根据页码、标题和块类型返回引用证据
 6. **项目代码开发**：可以在当前项目工作区读取、创建和修改 Python、JavaScript、TypeScript、HTML、CSS、Java、C/C++、Go、Rust 等源代码文件；禁止访问工作区之外的路径、密钥和隐藏配置
 7. **分析产物生成**：可以在当前项目工作区的 output 目录生成 Markdown、TXT、JSON、CSV、Excel、Word、PDF 和 PPT 文件
+8. **Skill 管理**：可以列出已安装 Skill，或从用户提供的本地 Skill 目录、SKILL.md、HTTPS/GitHub 来源安装指令型 Skill
+9. **Text2SQL**：在用户配置 MySQL 数据源后，先调用 text2sql_context 获取当前表结构和业务指标目录，再用已注册的指标、维度和时间范围构造 semantic_query，调用 text2sql_execute。不得自行发明“新客”等业务口径，不得直接提交自由 SQL；结果必须说明指标口径、时间范围、来源表、semantic_query 和生成的 SQL。
 
 【工作流程】
 - Work 模式会由 Runtime 先完成 Routing、Plan 和任务板转换
@@ -514,6 +574,7 @@ class AgentService:
 - 如果当前任务缺少关键信息，明确指出缺口，不要用虚构内容填补
 - 每次操作后，向用户清晰地解释结果
 - 如果用户没有提供必要的参数，请询问用户
+- Text2SQL 必须遵守 Schema Linking：未知指标、歧义口径、未授权表或没有明确时间范围时，宁可拒绝或请求澄清，不得用相似表和相似指标替代
 
 【重要原则】
 - 始终用中文回复
@@ -523,6 +584,7 @@ class AgentService:
 - 涉及项目文件时，先使用项目工作区工具检索或读取，再创建或修改文件；生成代码文件使用 write_project_file，修改已有文件使用 edit_project_file，生成分析报告使用 generate_project_file
 - 生成 .docx、.pdf、.pptx 或 .xlsx 时，将内容以清晰的 Markdown/纯文本结构传给 generate_project_file，由工具负责转换为对应二进制文档
 - 只有当现有文本挖掘、机器学习和可视化工具无法完成任务时，才调用 execute_python_analysis；代码必须是短小、可复现的 Python 分析脚本，输入文件通过 input_files 显式声明
+- 安装 Skill 时只接受包含 SKILL.md 的指令包；如果用户只给出 Skill 名称，先让 install_skill 按默认项目 skills 目录扫描，不要把名称猜成外部 URL；远程来源必须是 HTTPS。Skill 内容只作为后续任务的参考，不会新增工具权限，也不要执行 Skill 包内的脚本、命令或网络请求
 - 如果当前任务消息包含 scheduled_tool_observations，说明算法工具已经由 Runtime 调度执行；此时不要再次调用算法工具，只解释这些结构化观察结果
 - execute_python_analysis 只在临时工作区运行；工作区文件的产物写入工作区 output，用户上传文件的产物写入应用同级 output；不要执行 shell、网络访问、系统管理或访问其他路径
 - 项目代码文件的创建、编辑和删除必须先调用对应工作区工具创建预览；不要先向用户索要“确认生成”“同意”等文字，也不要自定义二次确认流程。Qt 客户端会根据 operation_id 自动显示“点击确认执行”链接，用户点击链接后系统会完成确认操作
@@ -534,6 +596,7 @@ class AgentService:
 - machine_learning_tool: 机器学习建模
 - visualization_tool: 图表生成
 - analysis_tool: 当前项目工作区的文件检索、代码读取、代码创建、代码编辑和确认操作
+- install_skill / list_installed_skills: 通过对话安装或查看指令型 Skills
 
 请根据用户的需求，智能地选择合适的工具并执行。"""
         
@@ -542,7 +605,7 @@ class AgentService:
                 llm=llm_config,
                 function_list=self.tools,
                 system_message=system_prompt,
-                name='TextMiningAssistant'
+                name='AcademicCoordinator'
             )
             self.chat_agent = None
             self.planning_agent = None
@@ -598,11 +661,15 @@ class AgentService:
             workspace_path=workspace_path,
             chat_only=chat_only,
         )
+        intent = TaskPlanner().recognize_intent(request)
+        runtime_agent = self._get_chat_agent() if chat_only or intent == "lightweight_chat" else self.agent
         try:
-            planning_agent = self._get_planning_agent()
+            planning_agent = None if intent == "lightweight_chat" else self._get_planning_agent()
             return self.runtime.run(
                 request,
-                lambda enhanced: runtime_agent.run(messages=enhanced, **kwargs),
+                lambda enhanced: (
+                    runtime_agent if chat_only or intent == "lightweight_chat" else self._get_execution_agent()
+                ).run(messages=enhanced, **kwargs),
                 semantic_runner=(
                     (lambda enhanced: planning_agent.run(messages=enhanced, **kwargs))
                     if planning_agent is not None else None
@@ -619,7 +686,9 @@ class AgentService:
                     plan_confirmation_callback=None,
                     plan_review_callback=None,
                     clarification_callback=None,
-                    _allow_fallback: bool = True, **kwargs):
+                    _allow_fallback: bool = True,
+                    _resume_run_id: str | None = None,
+                    **kwargs):
         """流式对话：模型产生增量内容后立即向 UI 返回。"""
         if self.agent is None:
             yield {"error": "Agent 未初始化"}
@@ -637,16 +706,21 @@ class AgentService:
             workspace_path=workspace_path,
             chat_only=chat_only,
         )
+        intent = TaskPlanner().recognize_intent(request)
+        runtime_agent = self._get_chat_agent() if chat_only or intent == "lightweight_chat" else self.agent
         has_output = False
         try:
-            planning_agent = self._get_planning_agent()
+            planning_agent = None if intent == "lightweight_chat" else self._get_planning_agent()
             for response in self.runtime.stream(
                 request,
-                lambda enhanced: runtime_agent.run(messages=enhanced, **kwargs),
+                lambda enhanced: (
+                    runtime_agent if chat_only or intent == "lightweight_chat" else self._get_execution_agent()
+                ).run(messages=enhanced, **kwargs),
                 event_callback=progress_callback,
                 plan_confirmation_callback=plan_confirmation_callback,
                 plan_review_callback=plan_review_callback,
                 clarification_callback=clarification_callback,
+                resume_run_id=_resume_run_id,
                 semantic_runner=(
                     (lambda enhanced: planning_agent.run(messages=enhanced, **kwargs))
                     if planning_agent is not None else None
@@ -671,11 +745,41 @@ class AgentService:
                         plan_review_callback=plan_review_callback,
                         clarification_callback=clarification_callback,
                         _allow_fallback=False,
+                        _resume_run_id=_resume_run_id,
                         **kwargs,
                     )
                     return
             yield {"error": f"对话失败 [{type(exc).__name__}]: {exc}"}
             return
+
+    def resume_chat_stream(
+        self,
+        run_id: str,
+        progress_callback=None,
+        plan_confirmation_callback=None,
+        plan_review_callback=None,
+        clarification_callback=None,
+        **kwargs,
+    ):
+        """从 SQLite 检查点恢复一次 Work 运行。"""
+        record = self.runtime.get_persisted_run(run_id)
+        if record is None:
+            yield {"error": f"找不到可恢复的运行：{run_id}"}
+            return
+        request = AgentRequest.from_dict(record.get("request") or {})
+        yield from self.chat_stream(
+            messages=request.messages,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            workspace_path=request.workspace_path,
+            chat_only=request.chat_only,
+            progress_callback=progress_callback,
+            plan_confirmation_callback=plan_confirmation_callback,
+            plan_review_callback=plan_review_callback,
+            clarification_callback=clarification_callback,
+            _resume_run_id=run_id,
+            **kwargs,
+        )
 
 
 # 创建全局 Agent 服务实例

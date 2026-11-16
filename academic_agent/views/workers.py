@@ -8,6 +8,7 @@ from typing import Any
 from PySide6.QtCore import QThread, Signal
 
 from academic_agent.agent.adapters.qwen import agent_service
+from academic_agent.integrations.speech_to_text import speech_to_text_service
 
 
 class StreamWorker(QThread):
@@ -25,6 +26,7 @@ class StreamWorker(QThread):
         session_id: str | None = None,
         workspace_path: str | None = None,
         chat_only: bool = False,
+        resume_run_id: str | None = None,
     ):
         super().__init__()
         self.messages = messages
@@ -32,6 +34,7 @@ class StreamWorker(QThread):
         self.session_id = session_id
         self.workspace_path = workspace_path
         self.chat_only = chat_only
+        self.resume_run_id = resume_run_id
         self._plan_decision_event = threading.Event()
         self._plan_configuration: dict[str, Any] | None = None
         self._plan_review_event = threading.Event()
@@ -95,17 +98,27 @@ class StreamWorker(QThread):
                 self.failed.emit(f"Agent 初始化失败：{detail}")
                 return
             response_started = False
-            for response in agent_service.chat_stream(
-                self.messages,
-                user_id=self.user_id,
-                session_id=self.session_id,
-                workspace_path=self.workspace_path,
-                chat_only=self.chat_only,
-                progress_callback=self.progress.emit,
-                plan_confirmation_callback=self._wait_for_plan_configuration,
-                plan_review_callback=self._wait_for_plan_review,
-                clarification_callback=self._wait_for_clarification,
-            ):
+            if self.resume_run_id:
+                responses = agent_service.resume_chat_stream(
+                    self.resume_run_id,
+                    progress_callback=self.progress.emit,
+                    plan_confirmation_callback=self._wait_for_plan_configuration,
+                    plan_review_callback=self._wait_for_plan_review,
+                    clarification_callback=self._wait_for_clarification,
+                )
+            else:
+                responses = agent_service.chat_stream(
+                    self.messages,
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    workspace_path=self.workspace_path,
+                    chat_only=self.chat_only,
+                    progress_callback=self.progress.emit,
+                    plan_confirmation_callback=self._wait_for_plan_configuration,
+                    plan_review_callback=self._wait_for_plan_review,
+                    clarification_callback=self._wait_for_clarification,
+                )
+            for response in responses:
                 if isinstance(response, dict) and response.get("error"):
                     self.failed.emit(response["error"])
                     return
@@ -120,3 +133,24 @@ class StreamWorker(QThread):
             self.finished_ok.emit()
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class VoiceTranscriptionWorker(QThread):
+    """在后台线程调用 ASR，避免网络识别阻塞 Qt 对话界面。"""
+
+    result = Signal(str, str)
+    failed = Signal(str)
+
+    def __init__(self, audio_path: str):
+        super().__init__()
+        self.audio_path = audio_path
+
+    def run(self) -> None:
+        try:
+            text, status = speech_to_text_service.transcribe(self.audio_path)
+            if text.strip():
+                self.result.emit(text.strip(), status)
+            else:
+                self.failed.emit(status or "语音识别没有返回文本")
+        except Exception as exc:
+            self.failed.emit(f"语音识别失败：{exc}")

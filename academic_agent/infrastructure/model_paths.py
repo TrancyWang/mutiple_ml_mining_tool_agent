@@ -35,10 +35,10 @@ def default_model_root() -> Path:
     if configured is not None:
         return configured
     if getattr(sys, "frozen", False):
-        return (resource_root() / "video_text_mutiplemodal_agent" / "pretrain_models").resolve()
+        return (resource_root() / "text_mining_tools_agent_client_cpu" / "pretrain_models").resolve()
     return (
         resource_root().parent
-        / "video_text_mutiplemodal_agent"
+        / "text_mining_tools_agent_client_cpu"
         / "pretrain_models"
     ).resolve()
 

@@ -38,10 +38,12 @@ def test_clustering_embeddings_validate_row_count_and_rank():
 def test_isolated_clustering_uses_spawn_and_returns_labels(tmp_path):
     """Exercise the process boundary without loading the real BGE model."""
 
-    package = tmp_path / "src_codes" / "text_processor_subagent_stage_3" / "common"
+    package = tmp_path / "src_code" / "text_mining" / "embeddings_models"
     package.mkdir(parents=True)
     for init_path in (
-        tmp_path / "src_codes" / "text_processor_subagent_stage_3" / "__init__.py",
+        tmp_path / "src_code" / "__init__.py",
+        tmp_path / "src_code" / "text_mining" / "__init__.py",
+        tmp_path / "src_code" / "text_mining" / "embeddings_models" / "__init__.py",
         package / "__init__.py",
     ):
         init_path.write_text("", encoding="utf-8")
@@ -49,8 +51,11 @@ def test_isolated_clustering_uses_spawn_and_returns_labels(tmp_path):
         """
 import numpy as np
 
-class _FakeEmbedding:
-    def get_query_vector(self, texts):
+class TextEmbedding:
+    def __init__(self, **_kwargs):
+        pass
+
+    def get_query_vector(self, texts, batch_size=64):
         return np.asarray([
             [1.0, 0.0, 0.0],
             [0.9, 0.1, 0.0],
@@ -58,7 +63,6 @@ class _FakeEmbedding:
             [0.1, 0.9, 0.0],
         ], dtype=np.float64)
 
-txt = _FakeEmbedding()
 """.strip(),
         encoding="utf-8",
     )

@@ -10,6 +10,7 @@ Academic Agent 是一个基于 PySide6 的桌面 Agent 应用，面向文本挖�
 
 ## 文档导航
 
+- [按功能划分的 Agent](#按功能划分的-agent)：六个专业 Agent 的职责和协作方式
 - [项目架构](#项目架构)：分层结构、模块职责和依赖方向
 - [核心运行流程](#核心运行流程)：从启动、登录、输入问题到结果回传
 - [典型任务流程](#典型任务流程)：文本聚类、情感分析、机器学习、项目代码和文档 RAG
@@ -50,8 +51,39 @@ Academic Agent 是一个基于 PySide6 的桌面 Agent 应用，面向文本挖�
 | 可视化 | 词云、聚类分布图、情感分布图、折线图等 |
 | 文档问答 | PDF、Markdown、TXT、DOCX、CSV、JSON 文档解析、混合检索和引用证据 |
 | 工作区 | 检索、读取、生成、编辑和删除项目文件；写入类操作支持预览和确认 |
-| Agent 编排 | Routing → Plan → Task Board → 执行 → 验收 → 重试/重规划 → 结果汇总 |
+| Agent 编排 | Routing → Plan → Task Board → 专业 Agent 分工 → 执行 → 验收 → 重试/重规划 → 结果汇总 |
 | 模型服务 | Gemini、通义千问（新加坡/北京）和 Ollama；可在客户端切换 |
+
+## 按功能划分的 Agent
+
+Work 模式采用“协调器 + 六个业务专业 Agent + Skill 管理 Agent”。协调器复用现有 Planner、TaskBoard 和 Runtime，负责拆解、分工、顺序、检查和汇总；业务 Agent 负责自己的任务，Skill 管理 Agent 负责处理用户通过对话提交的 Skill 包。
+
+| Agent | 标识 | 负责内容 |
+| --- | --- | --- |
+| 数据分析 Agent | `data_analysis` | 加载文件、理解字段、数据质量、描述统计、缺失值与重复值处理 |
+| 文本挖掘 Agent | `text_mining` | 文本预处理、文本聚类、情感分析、关键词、实体识别、关系抽取、已有结果修复 |
+| 机器学习 Agent | `machine_learning` | 特征处理、分类、回归、因果推断、模型指标解释 |
+| 可视化 Agent | `visualization` | 词云、聚类分布图、情感分布图、折线图 |
+| 文档问答 Agent | `document` | 文档解析与检索、证据整理、带引用回答 |
+| 项目工作区 Agent | `project` | 项目文件定位与读取、代码创建与编辑、将分析结果生成报告文件 |
+| Skill 管理 Agent | `skill_manager` | 列出和安装包含 `SKILL.md` 的指令型 Skill 包，不执行包内脚本 |
+
+例如上传评论及销量数据后，输入“清洗数据，分析评论情感，做回归预测，再画折线图”，任务板可以依次交给数据分析、文本挖掘、机器学习和可视化 Agent。每个 Agent 获得当前任务、已确认信息、前序已完成结果、工具证据和产物路径；实际任务与参数仍由需求和数据字段决定。界面显示“机器学习 Agent · 训练模型”等任务标签，以及 Agent 接手任务的日志。
+
+每个专业 Agent 在 Qwen-Agent 适配层拥有独立的 Assistant 实例、职责提示和工具列表，按需创建并缓存，沿用用户当前选择的模型服务。当前按任务依赖顺序执行，共用会话数据上下文；尚未提供每个 Agent 单独选模型或并发修改同一数据集的功能。
+
+分工与权限在本地确定：优先根据调度工具或任务建议工具确定负责人，缺少工具提示时参考任务文本及当前能力路由。专业 Agent 的工具取“当前 Plan 允许工具”与“自身能力”的交集，再按任务缩小；加载和统计等辅助工具可在相关专业任务中使用。模型端只展示此集合，执行器再校验一次。直接调度的算法执行后，解释阶段不注册工具，避免重复计算。结果修复只能在对应原始文本能力已获准时使用。
+
+包含文档取证、建模、报告写入的混合需求会走完整任务拆分，让各专业 Agent 依次调用工具，保留检索和文件交付步骤；纯算法流程仍使用既有算法调度器。Chat 模式保持纯问答。当未提供语义规划器时，保留原有单次执行接口，并受 Plan 工具权限约束。
+
+实现入口：
+
+- `academic_agent/agent/specialists/catalog.py`：专业 Agent 职责、主工具、辅助工具。
+- `academic_agent/agent/specialists/coordinator.py`：任务分工、权限交集、修复工具边界。
+- `academic_agent/agent/runtime.py`：执行、结果交接、重试和重规划时的分工。
+- `academic_agent/agent/adapters/qwen.py`：独立 Assistant 实例及受限工具包装器。
+
+新增专业 Agent 时，在目录中登记职责和工具，在工具注册表中接入实现，并在 Planner/SkillCatalog 中明确其适用需求和可用范围。仅登记工具不会自动扩大已有任务的权限。
 
 ## 项目架构
 
@@ -63,6 +95,8 @@ Academic Agent 不是把所有事情交给大模型的聊天机器人，而是�
 | --- | --- | --- |
 | 大模型 | 理解自然语言、判断当前关注点、生成 Plan、补充解释、选择候选算法 | 不直接决定工具权限、不绕过用户确认、不替用户猜缺失字段 |
 | 本地 Planner / Runtime | 路由、Plan 生命周期、任务顺序、状态转换、重试、重规划和终止 | 不替代具体算法计算 |
+| Harness 运行层 | 为每次运行提供统一 RunEnvelope、事件账本、预算守门、脱敏持久化和恢复游标 | 不新增业务 Agent，不替换现有 Runtime 编排 |
+| AgentCoordinator / 专业 Agent | 为任务分配负责人、限制专业工具、传递已完成结果与证据 | 不自行扩大 Plan 权限或跳过验收 |
 | Algorithm Scheduler | 根据当前允许的工具提出算法顺序和参数 | 不执行未授权工具，不把工作区写入工具纳入算法调度 |
 | Tool Executor / Policy | 检查工具是否注册、当前任务是否允许、参数和路径是否安全 | 不依赖系统提示词作为唯一安全边界 |
 | 数据与算法模块 | 加载数据、预处理、BERT/BGE 推理、机器学习计算、图表和文件产物 | 不负责解释用户意图 |
@@ -92,6 +126,8 @@ flowchart TB
     subgraph Agent[Agent 编排层]
         Service[AgentService<br/>Qwen-Agent 适配]
         Runtime[AgentRuntime<br/>Plan Loop + Task Board + Convergence Loop]
+        Coordinator[AgentCoordinator<br/>专业分工与权限交集]
+        Specialists[六个业务专业 Agent + Skill 管理 Agent<br/>数据 / 文本 / ML / 图表 / 文档 / 工作区 / Skills]
         Planner[TaskPlanner + SkillCatalog<br/>能力路由与工具白名单]
         Context[AgentContextBuilder + MemoryCoordinator<br/>上下文与历史记忆]
         Scheduler[Algorithm Scheduler<br/>算法计划规范化]
@@ -123,10 +159,13 @@ flowchart TB
     Worker --> Service
     Service --> Runtime
     Runtime --> Planner
+    Runtime --> Coordinator
+    Coordinator --> Specialists
     Runtime --> Context
     Runtime --> Scheduler
     Runtime --> Verifier
     Runtime --> Executor
+    Specialists --> Executor
     Executor --> Policy
     Executor --> Registry
     Registry --> Handlers
@@ -167,6 +206,7 @@ academic_agent/
 │   ├── runtime.py                    # 全部运行时编排逻辑
 │   ├── planning/planner.py           # 本地能力路由
 │   ├── planning/algorithm_scheduler.py # 算法计划白名单与参数校验
+│   ├── specialists/                 # 六个专业 Agent 的职责目录与任务协调器
 │   ├── orchestration/                # Plan Loop 和 TaskVerifier
 │   ├── tooling/                      # 工具注册、执行器和业务 handler
 │   ├── policies/                     # 工具访问策略
@@ -270,6 +310,7 @@ sequenceDiagram
 | 路由 | 典型问题 | 主要工具范围 |
 | --- | --- | --- |
 | `chat` | 解释概念、讨论思路 | 不注册任何工具 |
+| `skill_management` | 通过对话查看或安装 Skill | `list_installed_skills`、`install_skill` |
 | `document` | 阅读 PDF、Markdown、DOCX 并带引用回答 | `document_rag` |
 | `data` | 数据概览、统计、预处理、文本挖掘 | `profile_data`、`load_data`、`data_statistics`、`text_clustering` 等 |
 | `machine_learning` | 回归、分类、因果推断 | `data_preprocess`、`feature_processing`、`regression` 等 |
@@ -279,6 +320,21 @@ sequenceDiagram
 路由先由本地规则保证基本能力边界，再由语义规划模型补充本轮重点。模型可以说明“为什么做”，但不能通过自然语言输出把未授权工具加入 `available_tools`。
 
 对于 Work 模式中的“帮我分析一下”等模糊请求，Runtime 会先询问“文本挖掘、机器学习、数据分析或学术文献”等方向，再继续规划；不会把一个没有目标的请求直接变成无限范围的任务。
+
+### 4.1 通过对话安装 Skills
+
+在 Work 模式中可以直接输入：
+
+```text
+请安装 pdf-report
+请安装这个 skill：/当前项目/skills/my-skill
+请安装这个 skill：https://example.com/my-skill.zip
+请安装 github:owner/repository 里的 skill
+```
+
+如果用户只输入一个 Skill 名称，程序会默认递归扫描当前项目的 `skills/` 目录，并按目录名或 `SKILL.md` frontmatter 中的 `name` 查找；也可以用 `ACADEMIC_AGENT_SKILLS_SOURCE_DIR` 指定额外来源目录。来源需要包含 `SKILL.md`。本地来源必须位于当前项目工作区；远程来源只允许 HTTPS，GitHub 仓库可以使用 `github:owner/repository` 或仓库地址。Skill 会安装到 `runtime/skills/`（也可以通过 `ACADEMIC_AGENT_SKILLS_DIR` 修改），安装后相关任务会自动把 `SKILL.md` 加入上下文。
+
+Skill 是指令和参考资料，不是 Python 插件：安装过程不会执行包内脚本，也不会新增工具、突破路径权限或绕过文件操作确认。更新同名 Skill 时，只有用户明确要求覆盖，模型才应传入 `overwrite=true`。Chat 模式仍然是无工具的自然语言问答。
 
 ### 5. Plan Loop：补齐信息并生成可审阅计划
 
@@ -371,7 +427,15 @@ AgentPolicy 参数、模式和路径检查
 
 文本聚类和情感分析的结果修复任务有单独路径：如果已有结构化标签和分布足够，程序可以调用 `repair_text_clustering` 或 `repair_sentiment_analysis` 重建结果，不必再次调用 BGE/BERT。
 
-### 10. 结果、记忆和界面回传
+### 10. 中断后的检查点恢复
+
+Work 模式的任务板会以 `run_id` 为主键写入本机 SQLite 的 `agent_runs` 表。Harness 还会把模型轮次、工具调用、任务状态、重规划和运行结束原因追加写入 `agent_run_events`；事件在写入前会做凭据字段脱敏和长度限制。任务开始、工具返回、进入验收、完成/重试/阻塞和重规划后都会更新检查点；因此程序重启后，登录成功时会提示是否继续最近一次未完成的任务。
+
+恢复时已经 `COMPLETED` 的任务会跳过；上次处于 `RUNNING` 或 `VERIFYING` 的任务会回到可执行状态。当前任务已经落盘的成功工具结果，在工具名和参数一致且不需要用户确认时会复用，避免重复计算或重复产物。涉及用户确认的文件操作不伪装成绝对幂等，仍需要重新确认。
+
+这是一种任务级的可恢复、尽量避免重复执行机制，不是对所有外部系统副作用的分布式 exactly-once 保证。
+
+### 11. 结果、记忆和界面回传
 
 任务结束后，Runtime 会：
 
@@ -457,6 +521,27 @@ Work 模式绑定当前项目
 ```
 
 RAG 的检索证据和最终回答是两个阶段：检索层提供来源，模型负责语言组织；不要把没有检索证据支持的内容当成文档原文。
+
+### MySQL Text2SQL
+
+MySQL Text2SQL 是 Work 模式中的可选数据源能力。用户先在“设置 → 数据源”配置
+MySQL 连接，并为数据库账号准备只读权限；密码只保存在当前运行会话，不写入
+SQLite、Plan、日志或模型上下文。
+
+Text2SQL 不让模型直接提交自由 SQL，而是经过以下链路：
+
+    自然语言
+      → text2sql_context：读取当前允许的 MySQL 表结构和业务指标目录
+      → Schema Linking：只选择已注册的指标、维度、筛选和时间范围
+      → semantic_query：受限 DSL
+      → SQL Creator：服务端用指标目录编译参数化 SELECT
+      → Runner：只执行单条只读查询并强制 LIMIT
+      → Enhancer：错误或空结果时给出一次受限纠错方向
+      → 返回指标口径、时间范围、来源表、semantic_query、SQL 和结果
+
+业务指标和维度由 TEXT2SQL_ONTOLOGY_PATH 指向的 JSON 文件注册。示例见
+resources/data/text2sql_ontology.example.json。如果指标不存在、业务词有歧义、
+表未授权或指标目录没有定义跨表关系，系统会拒绝猜测，不会换用相似指标或相似表。
 
 ## Work 与 Chat 的实现差异
 
@@ -619,7 +704,8 @@ SENTIMENT_MODEL_PATH=/Users/yourname/models/pretrain_models/xuyuan-trial-sentime
 
 ## 文本算法的外部源项目依赖
 
-源码运行时，以下文本能力通过适配器复用外部项目 `video_text_mutiplemodal_agent` 的实现：
+源码运行时，以下文本能力通过适配器统一复用新版
+`text_mining_tools_agent_client_cpu` 源项目的实现（根目录包含 `src_code/`）：
 
 - 文本预处理；
 - BGE 向量和文本聚类；
@@ -628,24 +714,33 @@ SENTIMENT_MODEL_PATH=/Users/yourname/models/pretrain_models/xuyuan-trial-sentime
 
 如果你只下载当前仓库而没有下载这个源项目，上述源项目依赖的能力可能无法使用；数据分析、通用机器学习、可视化、文档 RAG 等当前仓库内的能力仍可按依赖情况运行。
 
-推荐目录关系：
+目录关系：
 
 ```text
 parent/
 ├── mutiple_ml_mining_tool_agent/
-└── video_text_mutiplemodal_agent/
-    ├── src_codes/main_process_agent/text_processor_subagent_stage_3/
+└── text_mining_tools_agent_client_cpu/
+    ├── src_code/
     └── pretrain_models/
 ```
 
 如果源项目不在默认的同级目录，请在 `.env` 中显式配置：
 
 ```dotenv
-VIDEO_AGENT_SOURCE_ROOT=/absolute/path/to/video_text_mutiplemodal_agent
+TEXT_MINING_SOURCE_ROOT=/absolute/path/to/text_mining_tools_agent_client_cpu
 PRETRAINED_MODELS_DIR=/absolute/path/to/pretrain_models
 ```
 
-`VIDEO_AGENT_SOURCE_ROOT` 必须指向源项目根目录，不能直接指向 `src_codes` 或 `text_processor_subagent_stage_3` 子目录。
+`TEXT_MINING_SOURCE_ROOT` 必须指向源项目根目录，不能直接指向 `src_code` 子目录。
+
+如果源项目不在默认的同级目录，请在 `.env` 中显式配置。变量必须指向源项目根目录，不能指向 `src_code` 子目录：
+
+```dotenv
+TEXT_MINING_SOURCE_ROOT=/absolute/path/to/text_mining_tools_agent_client_cpu
+PRETRAINED_MODELS_DIR=/absolute/path/to/pretrain_models
+```
+
+新版的多种聚类算法、分批向量/情感预测和进度日志会由当前 Agent 统一接入。
 
 ## 大模型服务配置
 
@@ -724,6 +819,7 @@ OLLAMA_MODEL=qwen3.5:2b
 | --- | --- | --- |
 | `output/` | 图片、表格、报告等分析产物 | `ACADEMIC_AGENT_OUTPUT_DIR` |
 | `runtime/` | SQLite、会话和运行时数据 | `ACADEMIC_AGENT_DATA_DIR` |
+| `runtime/skills/` | 用户通过对话安装的 Skill 包 | `ACADEMIC_AGENT_SKILLS_DIR` |
 | `runtime/rag_datasets/` | 文档 RAG 的索引和元数据 | `RAG_DATA_DIR` |
 | `workspace/` 或当前工作区 | 项目文件操作范围 | 在客户端项目设置中选择 |
 | `QWEN_AGENT_DEFAULT_WORKSPACE` | Qwen-Agent 内部可写工作区 | 可选，不建议指向只读目录 |
@@ -775,6 +871,7 @@ Chat 模式只进行自然语言对话、解释和思路整理，不读取、生
 ```text
 academic_agent/
 ├── agent/                  # Runtime、Plan、Task Board、工具作用域和模型适配
+├── harness/                # RunEnvelope、运行事件、预算与恢复边界
 ├── algorithms/             # 机器学习、文本挖掘、预处理和可视化算法
 ├── application/services/   # 数据、ML、文本挖掘和可视化用例
 ├── controllers/            # 应用、账号、项目、会话和 Agent 生命周期
@@ -791,20 +888,21 @@ scripts/start_qt.sh         # macOS/Linux 启动脚本
 
 - `qt_client.py`：准备 Qt、运行时目录和单实例保护，然后启动主窗口。
 - `academic_agent/agent/runtime.py`：负责请求路由、计划、任务执行、验收、重试和结果汇总。
+- `academic_agent/harness/`：包住模型、工具、状态和恢复链路，提供统一运行事件与预算边界；不承载具体业务 Agent。
 - `academic_agent/agent/tooling/builtins.py`：注册数据、文本、机器学习、可视化、RAG 和工作区工具。
 - `academic_agent/agent/planning/algorithm_scheduler.py`：让模型提出算法选择，程序校验并直接执行确定性算法。
-- `academic_agent/integrations/video_text_adapter.py`：配置本地模型，并适配外部文本算法源项目。
+- `academic_agent/integrations/video_text_adapter.py`：配置本地模型，并接入新版文本算法源项目。
 - `academic_agent/rag/README.md`：文档 RAG 的实现说明。
 
 ## 从源码构建桌面安装包
 
 ### macOS
 
-macOS 构建需要 PyInstaller，并且当前 spec 默认要求能找到外部源项目的 `text_processor_subagent_stage_3`：
+macOS 构建需要 PyInstaller，并且当前 spec 默认要求能找到外部源项目的 `src_code`：
 
 ```bash
 PYTHON_BIN="$PWD/.venv/bin/python" \
-VIDEO_AGENT_SOURCE_ROOT=/absolute/path/to/video_text_mutiplemodal_agent \
+TEXT_MINING_SOURCE_ROOT=/absolute/path/to/text_mining_tools_agent_client_cpu \
 bash scripts/build_macos.sh
 ```
 
@@ -870,12 +968,12 @@ python -c "import qwen_agent; print(qwen_agent.__file__)"
 
 也可以在设置页面的“中文八分类情绪模型”中直接选择该目录，或设置 `SENTIMENT_MODEL_PATH`。
 
-### 4. 提示 `源项目不存在` 或找不到 `text_processor_subagent_stage_3`
+### 4. 提示 `源项目不存在` 或找不到 `src_code`
 
-检查 `VIDEO_AGENT_SOURCE_ROOT` 是否指向 `video_text_mutiplemodal_agent` 根目录，并确认下面的路径存在：
+检查 `TEXT_MINING_SOURCE_ROOT` 是否指向新版文本算法源项目根目录，并确认下面的路径存在：
 
 ```text
-<VIDEO_AGENT_SOURCE_ROOT>/src_codes/main_process_agent/text_processor_subagent_stage_3/
+<TEXT_MINING_SOURCE_ROOT>/src_code/
 ```
 
 ### 5. Ollama 连接失败

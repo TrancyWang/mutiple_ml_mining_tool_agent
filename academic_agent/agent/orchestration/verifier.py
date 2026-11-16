@@ -92,6 +92,27 @@ class TaskVerifier:
         observations: list[dict[str, Any]],
     ) -> tuple[bool, str] | None:
         """检查工具是否已经提供足够的聚类结构化证据。"""
+        text2sql_results = [
+            item.get("result") or {}
+            for item in observations
+            if item.get("tool") == "text2sql_execute"
+            and isinstance(item.get("result"), dict)
+        ]
+        if text2sql_results:
+            result = text2sql_results[-1]
+            if result.get("refusal"):
+                return True, "Text2SQL 已根据业务指标、Schema 或权限边界明确拒答。"
+            if not result.get("success"):
+                return False, str(result.get("error") or "Text2SQL 查询失败，等待受限纠错。")
+            if int(result.get("row_count") or 0) == 0 and (result.get("enhancer") or {}).get("retryable"):
+                return False, str(
+                    (result.get("enhancer") or {}).get("reason")
+                    or "Text2SQL 返回空结果，需要重新确认筛选条件。"
+                )
+            if result.get("trace") and result.get("sql"):
+                return True, "Text2SQL 已返回业务口径、来源表、执行 SQL 和结果。"
+            return False, "Text2SQL 缺少可溯源的 trace 或 SQL。"
+
         task_text = " ".join(
             str(value or "")
             for value in (task.title, task.task_goal, task.deliverable, task.done_when)

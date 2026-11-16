@@ -10,9 +10,20 @@ from academic_agent.repositories.sqlite_store import SQLiteConversationStore, sq
 
 class ConversationRepository(Protocol):
     def list_chat_sessions(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]: ...
-    def list_work_sessions(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]: ...
+    def list_work_sessions(
+        self,
+        user_id: str,
+        limit: int = 20,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]: ...
     def load_messages(self, session: dict[str, Any], limit: int = 200) -> list[dict[str, Any]]: ...
     def delete_session(self, session: dict[str, Any]) -> int: ...
+    def list_recoverable_agent_runs(
+        self,
+        user_id: str,
+        workspace_path: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]: ...
 
 
 @dataclass(slots=True)
@@ -29,12 +40,17 @@ class SQLiteConversationRepository:
             include_unbound=False,
         )
 
-    def list_work_sessions(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def list_work_sessions(
+        self,
+        user_id: str,
+        limit: int = 20,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
         return self.store.get_recent_sessions(
             user_id,
             limit=limit,
-            workspace_path=None,
-            bound_only=True,
+            workspace_path=workspace_path,
+            bound_only=workspace_path is None,
         )
 
     def load_messages(self, session: dict[str, Any], limit: int = 200) -> list[dict[str, Any]]:
@@ -50,4 +66,16 @@ class SQLiteConversationRepository:
             str(session.get("user_id") or "guest_user"),
             str(session.get("session_id") or ""),
             workspace_path=session.get("workspace_path") or None,
+        )
+
+    def list_recoverable_agent_runs(
+        self,
+        user_id: str,
+        workspace_path: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        return self.store.list_recoverable_agent_runs(
+            user_id,
+            workspace_path=workspace_path,
+            limit=limit,
         )

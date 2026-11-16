@@ -5,31 +5,93 @@ from __future__ import annotations
 import fnmatch
 import os
 import difflib
+import hashlib
 import uuid
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from academic_agent.infrastructure.runtime_paths import default_workspace_root, output_root
 
 
+_CURRENT_MANAGER: ContextVar["WorkspaceManager | None"] = ContextVar(
+    "academic_agent_workspace_manager", default=None
+)
+
+
+class StaleWorkspaceFileError(ValueError):
+    """文件在预览和确认之间发生变化，拒绝覆盖外部修改。"""
+
+
 class WorkspaceManager:
     def __init__(self, root: str | Path | None = None) -> None:
-        self.root = Path(root or default_workspace_root()).resolve()
+        self._root = Path(root or default_workspace_root()).resolve()
         self.ignored_dirs = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", "milvus_data", "chroma_db", ".academic_agent"}
         self.ignored_files = {".env", ".env.*", "*.key", "*.pem", "*.secret"}
         self.max_read_bytes = 2 * 1024 * 1024
-        self.permission_mode = "read_only"
-        self.pending_operations: dict[str, dict[str, Any]] = {}
+        self._permission_mode = "read_only"
+        self._pending_operations: dict[str, dict[str, Any]] = {}
         self._gitignore_patterns: list[str] = []
         self._load_gitignore()
         self._load_permissions()
 
+    def _active(self) -> "WorkspaceManager":
+        bound = _CURRENT_MANAGER.get()
+        return bound if bound is not None and bound is not self else self
+
+    @property
+    def root(self) -> Path:
+        return self._active()._root
+
+    @root.setter
+    def root(self, value: str | Path) -> None:
+        active = self._active()
+        active._root = Path(value).expanduser().resolve()
+
+    @property
+    def permission_mode(self) -> str:
+        return self._active()._permission_mode
+
+    @permission_mode.setter
+    def permission_mode(self, value: str) -> None:
+        self._active()._permission_mode = str(value)
+
+    @property
+    def pending_operations(self) -> dict[str, dict[str, Any]]:
+        # Pending confirmations must remain visible to the UI after a worker
+        # context exits, so scoped managers intentionally share this registry.
+        return self._active()._pending_operations
+
+    @contextmanager
+    def bind(self, root: str | Path | None = None):
+        """Bind a request-local manager without changing the UI's active root."""
+        if root:
+            # 初始化 scoped manager 时先解除外层绑定，避免构造函数里的
+            # .gitignore/permissions 加载误写到外层工作区。
+            construction_token = _CURRENT_MANAGER.set(None)
+            try:
+                scoped = WorkspaceManager(root)
+            finally:
+                _CURRENT_MANAGER.reset(construction_token)
+            scoped._pending_operations = self._pending_operations
+        else:
+            scoped = None
+        token = _CURRENT_MANAGER.set(scoped)
+        try:
+            yield scoped or self
+        finally:
+            _CURRENT_MANAGER.reset(token)
+
     def set_root(self, root: str | Path) -> Path:
+        active = self._active()
+        if active is not self:
+            return active.set_root(root)
         candidate = Path(root).expanduser().resolve()
         if not candidate.is_dir():
             raise ValueError(f"工作区目录不存在：{candidate}")
-        self.root = candidate
+        self._root = candidate
         self._load_gitignore()
         self._load_permissions()
         return self.root
@@ -71,6 +133,9 @@ class WorkspaceManager:
             self._gitignore_patterns = []
 
     def _safe_path(self, path: str | Path) -> Path:
+        active = self._active()
+        if active is not self:
+            return active._safe_path(path)
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = self.root / candidate
@@ -95,6 +160,9 @@ class WorkspaceManager:
         return candidate
 
     def _ignored(self, path: Path) -> bool:
+        active = self._active()
+        if active is not self:
+            return active._ignored(path)
         if any(part in self.ignored_dirs for part in path.relative_to(self.root).parts):
             return True
         if any(fnmatch.fnmatch(path.name, pattern) for pattern in self.ignored_files):
@@ -104,13 +172,30 @@ class WorkspaceManager:
                    for pattern in self._gitignore_patterns if not pattern.startswith("!"))
 
     def list_files(self, pattern: str = "*") -> list[str]:
+        active = self._active()
+        if active is not self:
+            return active.list_files(pattern)
         result = []
-        for path in self.root.rglob("*"):
-            if path.is_file() and not self._ignored(path) and fnmatch.fnmatch(path.name, pattern):
-                result.append(str(path.relative_to(self.root)))
+        # Prune protected/ignored directories before descending into them.
+        # The previous Path.rglob implementation filtered them only after
+        # traversal, so a workspace containing .git, venv or build caches
+        # could block the Qt event loop for a long time.
+        for current_root, directories, filenames in os.walk(self.root, topdown=True):
+            current_path = Path(current_root)
+            directories[:] = [
+                name for name in directories
+                if not self._ignored(current_path / name)
+            ]
+            for name in filenames:
+                path = current_path / name
+                if not self._ignored(path) and fnmatch.fnmatch(name, pattern):
+                    result.append(str(path.relative_to(self.root)))
         return sorted(result)
 
     def search(self, query: str, pattern: str = "*") -> list[dict[str, Any]]:
+        active = self._active()
+        if active is not self:
+            return active.search(query, pattern)
         query = query.strip()
         if not query:
             return []
@@ -132,14 +217,23 @@ class WorkspaceManager:
 
     def glob(self, pattern: str) -> list[str]:
         """按相对路径或文件名查找当前工作区文件。"""
+        active = self._active()
+        if active is not self:
+            return active.glob(pattern)
         pattern = pattern.strip() or "*"
         return [item for item in self.list_files("*") if fnmatch.fnmatch(item, pattern) or fnmatch.fnmatch(Path(item).name, pattern)]
 
     def grep(self, query: str, pattern: str = "*") -> list[dict[str, Any]]:
         """内容检索别名，返回文件、行号和上下文。"""
+        active = self._active()
+        if active is not self:
+            return active.grep(query, pattern)
         return self.search(query, pattern)
 
     def read(self, path: str, start_line: int = 1, end_line: int | None = None) -> dict[str, Any]:
+        active = self._active()
+        if active is not self:
+            return active.read(path, start_line, end_line)
         target = self._safe_path(path)
         if self._ignored(target):
             raise ValueError("该文件属于受保护文件，不能读取")
@@ -150,7 +244,16 @@ class WorkspaceManager:
         lines = target.read_text(encoding="utf-8", errors="ignore").splitlines()
         start = max(1, int(start_line))
         end = min(len(lines), int(end_line)) if end_line else len(lines)
-        return {"file": str(target.relative_to(self.root)), "start_line": start, "end_line": end, "content": "\n".join(lines[start - 1:end])}
+        stat = target.stat()
+        return {
+            "file": str(target.relative_to(self.root)),
+            "start_line": start,
+            "end_line": end,
+            "content": "\n".join(lines[start - 1:end]),
+            "sha256": self._sha256(target),
+            "size_bytes": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
 
     @staticmethod
     def _content_text(content: str | bytes) -> str:
@@ -165,7 +268,29 @@ class WorkspaceManager:
         else:
             target.write_text(str(content), encoding="utf-8")
 
+    @staticmethod
+    def _sha256(target: Path) -> str | None:
+        if not target.is_file():
+            return None
+        digest = hashlib.sha256()
+        with target.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _assert_fresh(self, target: Path, expected_sha256: str | None) -> None:
+        if expected_sha256 is None:
+            return
+        actual_sha256 = self._sha256(target)
+        if actual_sha256 != expected_sha256:
+            raise StaleWorkspaceFileError(
+                f"stale_workspace_file: 文件在操作确认前发生变化：{target}"
+            )
+
     def generate(self, path: str, content: str | bytes, overwrite: bool = False) -> dict[str, Any]:
+        active = self._active()
+        if active is not self:
+            return active.generate(path, content, overwrite)
         target = self._safe_path(path)
         if self._ignored(target):
             raise ValueError("不能生成或修改受保护文件")
@@ -178,11 +303,16 @@ class WorkspaceManager:
     def _preview_operation(
         self, operation: str, path: str, *, scope: str = "workspace", **payload: Any
     ) -> dict[str, Any]:
+        active = self._active()
+        if active is not self:
+            return active._preview_operation(operation, path, scope=scope, **payload)
         target = self._safe_output_path(path) if scope == "output" else self._safe_path(path)
         if scope == "workspace" and self._ignored(target):
             raise ValueError("不能操作受保护文件")
         display_path = str(target) if scope == "output" else str(target.relative_to(self.root))
         operation_id = uuid.uuid4().hex[:12]
+        expected_sha256 = payload.get("expected_sha256", self._sha256(target))
+        self._assert_fresh(target, expected_sha256)
         old_content = target.read_text(encoding="utf-8", errors="ignore") if target.is_file() else ""
         new_content = payload.get("content", "")
         if isinstance(new_content, bytes):
@@ -200,7 +330,12 @@ class WorkspaceManager:
                 tofile=display_path,
             ))
         self.pending_operations[operation_id] = {
-            "operation": operation, "path": str(target), "content": new_content, "scope": scope,
+            "operation": operation,
+            "path": str(target),
+            "root": str(self.root),
+            "content": new_content,
+            "scope": scope,
+            "expected_sha256": expected_sha256,
         }
         return {
             "success": False,
@@ -212,24 +347,49 @@ class WorkspaceManager:
             "message": f"已生成文件操作预览，请用户确认后调用 confirm_workspace_operation('{operation_id}')。",
         }
 
-    def edit(self, path: str, old_text: str, new_text: str, confirm: bool = False) -> dict[str, Any]:
+    def edit(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        confirm: bool = False,
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        active = self._active()
+        if active is not self:
+            return active.edit(path, old_text, new_text, confirm, expected_sha256)
         target = self._safe_path(path)
         if not target.is_file():
             raise FileNotFoundError(f"文件不存在：{path}")
+        self._assert_fresh(target, expected_sha256)
         current = target.read_text(encoding="utf-8", errors="ignore")
         if old_text not in current:
             raise ValueError("未找到要替换的原文，文件未修改")
         new_content = current.replace(old_text, new_text, 1)
         if not confirm and not self._auto_allowed("edit"):
-            return self._preview_operation("edit", path, content=new_content)
+            return self._preview_operation(
+                "edit", path, content=new_content, expected_sha256=self._sha256(target)
+            )
+        self._assert_fresh(target, expected_sha256)
         target.write_text(new_content, encoding="utf-8")
         return {"success": True, "file": str(target.relative_to(self.root)), "operation": "edit", "auto_approved": not confirm}
 
-    def prepare_generate(self, path: str, content: str | bytes, overwrite: bool = False) -> dict[str, Any]:
+    def prepare_generate(
+        self,
+        path: str,
+        content: str | bytes,
+        overwrite: bool = False,
+        expected_sha256: str | None = None,
+    ) -> dict[str, Any]:
+        active = self._active()
+        if active is not self:
+            return active.prepare_generate(path, content, overwrite, expected_sha256)
         target = self._safe_path(path)
+        self._assert_fresh(target, expected_sha256)
         if target.exists() and not overwrite:
             raise FileExistsError("文件已存在；如需覆盖，请明确传入 overwrite=true")
         if self._auto_allowed("generate"):
+            self._assert_fresh(target, expected_sha256)
             target.parent.mkdir(parents=True, exist_ok=True)
             self._write_content(target, content)
             return {"success": True, "file": str(target.relative_to(self.root)), "operation": "generate", "auto_approved": True}
@@ -239,6 +399,9 @@ class WorkspaceManager:
         self, path: str, content: str | bytes, overwrite: bool = False
     ) -> dict[str, Any]:
         """准备写入统一 output 目录，沿用工作区权限与确认链接。"""
+        active = self._active()
+        if active is not self:
+            return active.prepare_output_generate(path, content, overwrite)
         target = self._safe_output_path(path)
         if target.exists() and not overwrite:
             raise FileExistsError("输出文件已存在；如需覆盖，请明确传入 overwrite=true")
@@ -254,24 +417,35 @@ class WorkspaceManager:
         return self._preview_operation("generate", path, scope="output", content=content)
 
     def confirm(self, operation_id: str) -> dict[str, Any]:
-        operation = self.pending_operations.pop(operation_id, None)
+        active = self._active()
+        if active is not self:
+            return active.confirm(operation_id)
+        operation = self.pending_operations.get(operation_id)
         if not operation:
             raise ValueError("操作不存在、已确认或已过期")
         scope = operation.get("scope", "workspace")
-        target = (
-            self._safe_output_path(operation["path"])
-            if scope == "output"
-            else self._safe_path(operation["path"])
-        )
+        target = Path(str(operation["path"])).expanduser().resolve()
+        operation_root = Path(str(operation.get("root") or self.root)).expanduser().resolve()
+        if scope == "workspace" and not target.is_relative_to(operation_root):
+            raise ValueError("待确认文件已离开原工作区")
+        if scope == "output" and not target.is_relative_to(output_root()):
+            raise ValueError("待确认输出文件已离开允许的 output 目录")
+        self._assert_fresh(target, operation.get("expected_sha256"))
+        # 只有通过路径和新鲜度校验后才消费确认单；失败时保留它，便于
+        # 用户重新读取文件后决定是否重新发起操作。
+        self.pending_operations.pop(operation_id, None)
         if operation["operation"] == "delete":
             target.unlink()
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             self._write_content(target, operation["content"])
-        display_path = str(target) if scope == "output" else str(target.relative_to(self.root))
+        display_path = str(target) if scope == "output" else str(target.relative_to(operation_root))
         return {"success": True, "file": display_path, "operation": operation["operation"]}
 
     def delete(self, path: str, confirm: bool = False) -> dict[str, Any]:
+        active = self._active()
+        if active is not self:
+            return active.delete(path, confirm)
         target = self._safe_path(path)
         if not target.is_file():
             raise FileNotFoundError(f"文件不存在：{path}")

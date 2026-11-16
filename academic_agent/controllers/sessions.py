@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from academic_agent.models import AgentMode, ApplicationState
+from academic_agent.infrastructure.workspace_manager import workspace_manager
 from academic_agent.repositories.conversations import ConversationRepository
 
 
@@ -18,12 +19,29 @@ class SessionController:
         self.state.reset_conversation()
         return self.state.session_id
 
-    def list_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        limit: int = 20,
+        workspace_path: str | None = None,
+    ) -> list[dict[str, Any]]:
         if self.state.auth_session is None:
             return []
         if self.state.mode is AgentMode.CHAT:
             return self.repository.list_chat_sessions(self.state.user_id, limit)
-        return self.repository.list_work_sessions(self.state.user_id, limit)
+        current_root = workspace_path or str(workspace_manager.root)
+        return self.repository.list_work_sessions(
+            self.state.user_id,
+            limit,
+            workspace_path=current_root,
+        )
+
+    def list_recoverable_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        if self.state.auth_session is None:
+            return []
+        return self.repository.list_recoverable_agent_runs(
+            self.state.user_id,
+            limit=limit,
+        )
 
     def load_session(self, session: dict[str, Any]) -> list[dict[str, Any]]:
         messages = self.repository.load_messages(session, limit=200)

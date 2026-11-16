@@ -106,6 +106,10 @@ class AuthController:
         return session
 
     def apply(self, session: AuthSession) -> Path | None:
+        # MySQL 密码只存在当前登录会话；切换用户时不能沿用上一个用户的连接。
+        from academic_agent.infrastructure.mysql_datasource import mysql_data_source
+
+        mysql_data_source.clear()
         if session.is_root:
             return self.load_root_env()
         self.clear_cloud_credentials()
@@ -126,5 +130,8 @@ class AuthController:
 
     def logout(self, username: str) -> None:
         self.clear_cloud_credentials()
+        from academic_agent.infrastructure.mysql_datasource import mysql_data_source
+
+        mysql_data_source.clear()
         if username and username != "guest_user":
             self.store.delete_account(username)

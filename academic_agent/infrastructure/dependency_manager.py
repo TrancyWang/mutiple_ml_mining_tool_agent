@@ -18,6 +18,12 @@ class Dependency:
 
 DEPENDENCIES = [
     Dependency("基础数据处理", "pandas", "pandas", "CSV、Excel、数据预览"),
+    Dependency(
+        "MySQL Text2SQL",
+        "mysql-connector-python",
+        "mysql",
+        "连接用户配置的 MySQL 数据源并执行受限只读查询",
+    ),
     Dependency("可视化与 PDF 生成", "matplotlib", "matplotlib", "折线图、分布图、图片输出和 PDF 文档"),
     Dependency("可视化", "seaborn", "seaborn", "统计图表美化"),
     Dependency("机器学习", "scikit-learn", "sklearn", "聚类、分类、回归"),

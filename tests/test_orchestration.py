@@ -97,7 +97,7 @@ def test_verifier_consumes_model_passed_and_feedback():
     assert failed.feedback == "缺少结论"
 
 
-def test_work_mode_asks_for_academic_intent_when_route_is_unclear():
+def test_semantic_capability_routes_are_resolved_through_local_registry():
     planner = TaskPlanner()
     request = AgentRequest(
         [{"role": "user", "content": "帮我分析一下"}],
@@ -105,12 +105,90 @@ def test_work_mode_asks_for_academic_intent_when_route_is_unclear():
         "academic-intent-test",
         chat_only=False,
     )
-    assert planner.requires_academic_intent_clarification(request) is True
-    question = planner.academic_intent_question()
-    assert len(question["options"]) == 4
-    refined = planner.create_plan(request, routing_hint=question["options"][0]["value"])
+    refined = planner.create_plan(request, capability_routes=(AgentRoute.DATA,))
     assert refined.route is AgentRoute.DATA
     assert "text_clustering" in refined.available_tools
+
+
+def test_lightweight_chat_intent_is_detected_without_matching_task_requests():
+    planner = TaskPlanner()
+    assert planner.recognize_intent(
+        AgentRequest([{"role": "user", "content": "你是谁啊？"}], "u", "greeting")
+    ) == "lightweight_chat"
+    assert planner.recognize_intent(
+        AgentRequest([{"role": "user", "content": "你好，帮我分析这份数据"}], "u", "task")
+    ) == "task"
+
+
+def test_lightweight_chat_skips_semantic_planning_and_tools():
+    semantic_calls = []
+    model_calls = []
+
+    def semantic_runner(messages):
+        semantic_calls.append(messages)
+        raise AssertionError("简单问候不应调用语义规划模型")
+
+    def model_runner(messages):
+        model_calls.append(messages)
+        return response("我是 Academic Agent，可以帮你做学术数据分析。")
+
+    runtime = AgentRuntime(memory=MemoryStub())
+    events = []
+    result = runtime.run(
+        AgentRequest([{"role": "user", "content": "你是谁啊？"}], "u", "greeting-runtime"),
+        model_runner,
+        semantic_runner=semantic_runner,
+        event_callback=events.append,
+    )
+
+    assert "Academic Agent" in result[-1]["content"]
+    assert len(model_calls) == 1
+    assert semantic_calls == []
+    assert any(event["type"] == "intent_recognized" for event in events)
+    assert not any(event["type"] == "plan_review_required" for event in events)
+
+
+def test_simple_document_read_uses_document_route_without_academic_clarification():
+    planner = TaskPlanner()
+    request = AgentRequest(
+        [{"role": "user", "content": "只需要读一下这个文件"}],
+        "u",
+        "simple-document-read",
+    )
+
+    assert planner.is_simple_document_read(request.query) is True
+    assert planner.recognize_intent(request) == "simple_document_read"
+    assert planner.create_plan(request).route is AgentRoute.DOCUMENT
+    assert planner.requires_plan_review(request) is False
+
+
+def test_simple_document_read_skips_plan_review_callback():
+    semantic_calls = []
+    review_calls = []
+
+    def semantic_runner(messages):
+        semantic_calls.append(messages)
+        raise AssertionError("简单文件读取不应进入语义 Plan 阶段")
+
+    runtime = AgentRuntime(memory=MemoryStub())
+    events = []
+    plan, board, messages, auto_mode = runtime._prepare_workflow(
+        AgentRequest([{"role": "user", "content": "只需要读一下这个文件"}], "u", "simple-read-runtime"),
+        semantic_runner=semantic_runner,
+        event_callback=events.append,
+        clarification_callback=lambda _info: review_calls.append("clarification"),
+        plan_review_callback=lambda plan, board: review_calls.append((plan, board)),
+        plan_confirmation_callback=None,
+    )
+
+    assert plan.route is AgentRoute.DOCUMENT
+    assert len(board.tasks) == 1
+    assert board.tasks["T1"].suggested_tools == ("document_rag",)
+    assert messages[-1]["content"] == "只需要读一下这个文件"
+    assert auto_mode is False
+    assert semantic_calls == []
+    assert review_calls == []
+    assert any(event["type"] == "plan_review_skipped" for event in events)
 
 
 def test_uploaded_file_analysis_routes_to_data_not_project():
@@ -169,7 +247,7 @@ def test_cluster_structured_evidence_survives_truncated_draft():
 
 def test_runtime_runs_one_task_at_a_time_and_assembles_results():
     semantic_outputs = iter([
-        response('{"focus":["结果质量"],"reason":"用户关注结果"}'),
+        response('{"intent":"task","route":"data","focus":["结果质量"],"reason":"用户关注结果"}'),
         response('{"plan_goal":"完成摘要","final_deliverable":"摘要","readiness_summary":"信息足够","information_frame":[],"plan_ready":true}'),
         response("# 执行 Plan\n逐项生成摘要。"),
         response('{"board_goal":"完成摘要","final_deliverable":"摘要","tasks":[{"task_title":"写摘要","task_goal":"写出摘要","deliverable":"摘要正文","done_when":"结果非空"},{"task_title":"补充结论","task_goal":"补充结论","deliverable":"结论正文","done_when":"结果非空"}]}'),
@@ -294,7 +372,7 @@ def test_plan_review_uses_local_fallback_after_two_invalid_outputs():
 
 def test_runtime_replans_once_after_task_is_blocked():
     semantic_outputs = iter([
-        response('{"focus":["结果质量"],"reason":"用户关注结果"}'),
+        response('{"intent":"task","route":"data","focus":["结果质量"],"reason":"用户关注结果"}'),
         response('{"plan_goal":"完成摘要","final_deliverable":"摘要","readiness_summary":"信息足够","information_frame":[],"plan_ready":true}'),
         response("# 初始 Plan\n先完成摘要。"),
         response('{"board_goal":"完成摘要","final_deliverable":"摘要","tasks":[{"task_title":"写摘要","task_goal":"写出摘要","deliverable":"摘要正文","done_when":"结果合格"}]}'),

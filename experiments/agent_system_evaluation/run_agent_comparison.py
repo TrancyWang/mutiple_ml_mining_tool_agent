@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import sys
 import tempfile
@@ -56,15 +57,15 @@ PLANNED_SYSTEM = (
 )
 
 TASKS = [
-    {"task_id": "text-preprocess", "domain": "text", "file": "text.csv", "expected": {"load_data", "preprocess_text"}, "query": "加载文件 {path}，对 text 列进行中文文本预处理并生成结果文件。"},
-    {"task_id": "text-sentiment", "domain": "text", "file": "text.csv", "expected": {"load_data", "sentiment_analysis"}, "query": "加载文件 {path}，对 text 列进行中文情感分析并输出结果。"},
-    {"task_id": "text-cluster", "domain": "text", "file": "text.csv", "expected": {"load_data", "text_clustering"}, "query": "加载文件 {path}，将 text 列聚类为 3 个主题并保存聚类结果。"},
-    {"task_id": "text-keywords", "domain": "text", "file": "text.csv", "expected": {"load_data", "extract_keywords"}, "query": "加载文件 {path}，从 text 列中提取 Top 5 关键词。"},
+    {"task_id": "text-preprocess", "domain": "text", "file": "text.csv", "expected": {"load_data", "preprocess_text"}, "expected_rows": 36, "expected_params": {"text_column": "text"}, "query": "加载文件 {path}，对 text 列进行中文文本预处理并生成结果文件。"},
+    {"task_id": "text-sentiment", "domain": "text", "file": "text.csv", "expected": {"load_data", "sentiment_analysis"}, "expected_rows": 36, "expected_params": {"text_column": "text"}, "query": "加载文件 {path}，对 text 列进行中文情感分析并输出结果。"},
+    {"task_id": "text-cluster", "domain": "text", "file": "text.csv", "expected": {"load_data", "text_clustering"}, "expected_rows": 36, "expected_clusters": 3, "expected_params": {"text_column": "text", "n_clusters": 3}, "query": "加载文件 {path}，将 text 列聚类为 3 个主题并保存聚类结果。"},
+    {"task_id": "text-keywords", "domain": "text", "file": "text.csv", "expected": {"load_data", "extract_keywords"}, "expected_rows": 36, "minimum_keywords": 5, "expected_params": {"text_column": "text"}, "query": "加载文件 {path}，从 text 列中提取 Top 5 关键词。"},
     # feature_processing is useful but not required: the current model
     # adapters can train directly on numeric columns. The gold sequence
     # therefore measures task completion, not one rigid implementation path.
-    {"task_id": "ml-classification", "domain": "ml", "file": "ml.csv", "expected": {"load_data", "classification"}, "query": "加载文件 {path}，使用 f1、f2、f3 预测 label，训练 SVM 分类模型并报告指标。"},
-    {"task_id": "ml-regression", "domain": "ml", "file": "ml.csv", "expected": {"load_data", "regression"}, "query": "加载文件 {path}，使用 f1、f2、f3 预测 target，训练线性回归模型并报告指标。"},
+    {"task_id": "ml-classification", "domain": "ml", "file": "ml.csv", "expected": {"load_data", "classification"}, "expected_rows": 80, "expected_params": {"target_var": "label", "feature_vars": ["f1", "f2", "f3"], "model_type": "svm"}, "query": "加载文件 {path}，使用 f1、f2、f3 预测 label，训练 SVM 分类模型并报告指标。"},
+    {"task_id": "ml-regression", "domain": "ml", "file": "ml.csv", "expected": {"load_data", "regression"}, "expected_rows": 80, "expected_params": {"target_var": "target", "feature_vars": ["f1", "f2", "f3"], "model_type": "linear"}, "query": "加载文件 {path}，使用 f1、f2、f3 预测 target，训练线性回归模型并报告指标。"},
 ]
 
 
@@ -120,10 +121,120 @@ def _reset_global_data() -> None:
 
 def _config() -> dict[str, Any]:
     AuthController().load_root_env()
-    default_models = REPO_ROOT.parent / "video_text_mutiplemodal_agent" / "pretrain_models"
+    default_models = REPO_ROOT.parent / "text_mining_tools_agent_client_cpu" / "pretrain_models"
     if not os.getenv("PRETRAINED_MODELS_DIR") and default_models.is_dir():
         os.environ["PRETRAINED_MODELS_DIR"] = str(default_models)
     return get_llm_config_priority(model_name=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"), provider="gemini")
+
+
+def _evaluate_outcome(task: dict[str, Any], calls: list[dict[str, Any]], final_answer_returned: bool, input_path: Path) -> dict[str, Any]:
+    """Check deliverable evidence independently from the requested tool sequence."""
+    checks: list[dict[str, Any]] = []
+    failures: list[str] = []
+    checks.append({"criterion": "final_answer_returned", "passed": final_answer_returned})
+    if not final_answer_returned:
+        failures.append("the model did not return a final user-facing answer")
+
+    load_calls = [call for call in calls if call.get("action") == "load_data" and call.get("success")]
+    loaded_rows = None
+    if "load_data" in task["expected"]:
+        result = load_calls[-1].get("result", {}) if load_calls else {}
+        loaded_rows = result.get("rows") if isinstance(result, dict) else None
+        load_params = load_calls[-1].get("params", {}) if load_calls else {}
+        requested_path = load_params.get("file_path") if isinstance(load_params, dict) else None
+        right_input = bool(requested_path and Path(str(requested_path)).resolve() == input_path.resolve())
+        passed = loaded_rows == task.get("expected_rows") and right_input
+        checks.append({"criterion": "expected_input_and_rows", "passed": passed, "observed": {"rows": loaded_rows, "file_path": requested_path}})
+        if not passed:
+            failures.append("loaded input path or row count did not match the fixture")
+
+    outcome_actions = set(task["expected"]) - {"load_data"}
+    outcome_calls = [
+        call for call in calls
+        if call.get("action") in outcome_actions and call.get("success")
+    ]
+    result = outcome_calls[-1].get("result", {}) if outcome_calls else {}
+    action = outcome_calls[-1].get("action") if outcome_calls else None
+    if not isinstance(result, dict):
+        result = {}
+    outcome_params = outcome_calls[-1].get("params", {}) if outcome_calls else {}
+    if not isinstance(outcome_params, dict):
+        outcome_params = {}
+    expected_params = task.get("expected_params", {})
+    default_params = {"text_column": "text", "model_type": "svm" if action == "classification" else "linear"}
+    parameter_mismatches = {
+        key: {"expected": expected, "actual": outcome_params.get(key, default_params.get(key))}
+        for key, expected in expected_params.items()
+        if (
+            set(outcome_params.get(key, [])) != set(expected)
+            if key == "feature_vars" and isinstance(outcome_params.get(key, []), list)
+            else outcome_params.get(key, default_params.get(key)) != expected
+        )
+    }
+    parameters_passed = not parameter_mismatches
+    checks.append({"criterion": "required_analysis_parameters", "passed": parameters_passed, "observed": {"parameters": outcome_params, "mismatches": parameter_mismatches}})
+    if not parameters_passed:
+        failures.append("analysis parameters did not match the task specification")
+
+    artifact = result.get("output_file")
+    artifact_exists = bool(artifact and Path(str(artifact)).is_file())
+    checks.append({"criterion": "deliverable_file_exists", "passed": artifact_exists, "observed": artifact})
+    if not artifact_exists:
+        failures.append("the expected deliverable file is missing")
+
+    if action == "preprocess_text":
+        columns = result.get("processed_columns") or []
+        passed = "text_processed" in columns
+        checks.append({"criterion": "processed_column_present", "passed": passed, "observed": columns})
+        if not passed:
+            failures.append("the processed text column is missing")
+    elif action == "sentiment_analysis":
+        distribution = result.get("sentiment_distribution")
+        classified = sum(distribution.values()) if isinstance(distribution, dict) else 0
+        passed = classified == task.get("expected_rows") and bool(distribution)
+        checks.append({"criterion": "all_rows_classified", "passed": passed, "observed": classified})
+        if not passed:
+            failures.append("sentiment output did not account for every input row")
+    elif action == "text_clustering":
+        distribution = result.get("cluster_distribution")
+        profiles = result.get("cluster_profiles")
+        cluster_count = len(distribution) if isinstance(distribution, list) else 0
+        assigned_rows = sum(
+            int(item.get("segment_count", 0)) for item in distribution if isinstance(item, dict)
+        ) if isinstance(distribution, list) else 0
+        representatives_complete = (
+            isinstance(profiles, list)
+            and len(profiles) == task.get("expected_clusters")
+            and all(isinstance(item, dict) and any(str(text).strip() for text in item.get("representative_texts", [])) for item in profiles)
+        )
+        passed = (
+            cluster_count == task.get("expected_clusters")
+            and assigned_rows == task.get("expected_rows")
+            and representatives_complete
+        )
+        checks.append({"criterion": "cluster_evidence_complete", "passed": passed, "observed": {"clusters": cluster_count, "assigned_rows": assigned_rows, "representatives_complete": representatives_complete}})
+        if not passed:
+            failures.append("cluster count, row coverage, or representative evidence is incomplete")
+    elif action == "extract_keywords":
+        keywords = result.get("keywords")
+        count = len(keywords) if isinstance(keywords, list) else 0
+        passed = count >= task.get("minimum_keywords", 1)
+        checks.append({"criterion": "requested_keywords_present", "passed": passed, "observed": count})
+        if not passed:
+            failures.append("the requested number of keywords was not returned")
+    elif action in {"classification", "regression"}:
+        metrics = result.get("metrics")
+        valid_metrics = isinstance(metrics, dict) and bool(metrics) and all(
+            isinstance(value, (int, float)) and math.isfinite(float(value))
+            for value in metrics.values()
+        )
+        sample_size = result.get("sample_size")
+        passed = valid_metrics and isinstance(sample_size, int) and sample_size > 0
+        checks.append({"criterion": "finite_metrics_and_sample_count", "passed": passed, "observed": {"metrics": metrics, "sample_size": sample_size}})
+        if not passed:
+            failures.append("model metrics or sample count are missing or non-finite")
+
+    return {"passed": not failures, "checks": checks, "failures": failures}
 
 
 def _run_condition(client: OpenAI, config: dict[str, Any], task: dict[str, Any], path: Path, condition: str) -> dict[str, Any]:
@@ -143,6 +254,7 @@ def _run_condition(client: OpenAI, config: dict[str, Any], task: dict[str, Any],
     scope = ExecutionScope(request=request, plan=plan)
     calls: list[dict[str, Any]] = []
     assistant_text = ""
+    final_answer_returned = False
     model_error = ""
     started = time.perf_counter()
     try:
@@ -153,6 +265,7 @@ def _run_condition(client: OpenAI, config: dict[str, Any], task: dict[str, Any],
                 assistant_text = message.content or assistant_text
                 tool_calls = message.tool_calls or []
                 if not tool_calls:
+                    final_answer_returned = bool(message.content and message.content.strip())
                     break
                 messages.append(message.model_dump(exclude_none=True))
                 for call in tool_calls:
@@ -160,7 +273,7 @@ def _run_condition(client: OpenAI, config: dict[str, Any], task: dict[str, Any],
                         payload = json.loads(call.function.arguments or "{}")
                         action = str(payload.get("action", ""))
                         result = tool_executor.execute(action, **(payload.get("params") or {}))
-                        calls.append({"action": action, "success": bool(result.get("success")), "requires_confirmation": bool(result.get("requires_confirmation")), "error": result.get("error", ""), "has_artifact": bool(result.get("output_file") or result.get("artifacts") or result.get("output_files"))})
+                        calls.append({"action": action, "success": bool(result.get("success")), "requires_confirmation": bool(result.get("requires_confirmation")), "error": result.get("error", ""), "has_artifact": bool(result.get("output_file") or result.get("artifacts") or result.get("output_files")), "params": _safe(payload.get("params") or {}), "result": _safe(result)})
                         messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(_safe(result), ensure_ascii=False)})
                     except Exception as exc:
                         model_error = f"tool_call_error: {type(exc).__name__}: {exc}"
@@ -172,7 +285,9 @@ def _run_condition(client: OpenAI, config: dict[str, Any], task: dict[str, Any],
     actual = {call["action"] for call in calls}
     successful = {call["action"] for call in calls if call["success"] or call["requires_confirmation"]}
     failed_calls = sum(not call["success"] and not call["requires_confirmation"] for call in calls)
-    return {"task_id": task["task_id"], "domain": task["domain"], "condition": condition, "expected_tools": sorted(expected), "actual_tools": sorted(actual), "successful_tools": sorted(successful), "required_tools_success": expected.issubset(successful), "task_success": expected.issubset(successful) and not model_error, "clean_execution": expected.issubset(successful) and not model_error and failed_calls == 0, "tool_call_count": len(calls), "failed_tool_calls": failed_calls, "has_artifact": any(call["has_artifact"] for call in calls), "elapsed_seconds": round(time.perf_counter() - started, 3), "plan_route": plan.route.value, "plan_scope_size": len(plan.available_tools), "calls": calls, "assistant_text": assistant_text, "error": model_error}
+    outcome = _evaluate_outcome(task, calls, final_answer_returned, path)
+    required_tools_success = expected.issubset(successful)
+    return {"task_id": task["task_id"], "domain": task["domain"], "condition": condition, "expected_tools": sorted(expected), "actual_tools": sorted(actual), "successful_tools": sorted(successful), "required_tools_success": required_tools_success, "final_answer_returned": final_answer_returned, "outcome_success": outcome["passed"], "outcome_checks": outcome["checks"], "outcome_failures": outcome["failures"], "task_success": required_tools_success and outcome["passed"] and not model_error, "clean_execution": required_tools_success and outcome["passed"] and not model_error and failed_calls == 0, "tool_call_count": len(calls), "failed_tool_calls": failed_calls, "has_artifact": any(call["has_artifact"] for call in calls), "elapsed_seconds": round(time.perf_counter() - started, 3), "plan_route": plan.route.value, "plan_scope_size": len(plan.available_tools), "calls": calls, "assistant_text": assistant_text, "error": model_error}
 
 
 def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -182,7 +297,7 @@ def _summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {"runs": len(rows), "conditions": {}}
     for condition, items in groups.items():
         n = len(items)
-        result["conditions"][condition] = {"task_success_rate": sum(i["task_success"] for i in items) / n, "clean_execution_rate": sum(i["clean_execution"] for i in items) / n, "required_tools_success_rate": sum(i["required_tools_success"] for i in items) / n, "artifact_rate": sum(i["has_artifact"] for i in items) / n, "average_tool_calls": sum(i["tool_call_count"] for i in items) / n, "average_failed_tool_calls": sum(i["failed_tool_calls"] for i in items) / n, "average_elapsed_seconds": sum(i["elapsed_seconds"] for i in items) / n}
+        result["conditions"][condition] = {"task_success_rate": sum(i["task_success"] for i in items) / n, "clean_execution_rate": sum(i["clean_execution"] for i in items) / n, "required_tools_success_rate": sum(i["required_tools_success"] for i in items) / n, "outcome_success_rate": sum(i["outcome_success"] for i in items) / n, "artifact_rate": sum(i["has_artifact"] for i in items) / n, "average_tool_calls": sum(i["tool_call_count"] for i in items) / n, "average_failed_tool_calls": sum(i["failed_tool_calls"] for i in items) / n, "average_elapsed_seconds": sum(i["elapsed_seconds"] for i in items) / n}
     return result
 
 

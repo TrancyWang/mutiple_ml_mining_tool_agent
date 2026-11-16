@@ -54,18 +54,18 @@ class LoginDialog(QDialog):
         self.setModal(True)
         self.setStyleSheet(
             """
-            QDialog, QWidget { background:#ffffff; color:#245c36; }
-            QLabel#title { color:#176b38; font-size:26px; font-weight:700; padding:4px 0 2px; }
-            QLabel#hint { color:#5a8968; font-size:13px; line-height:1.5; padding-bottom:6px; }
+            QDialog, QWidget { background:#ffffff; color:#52745b; }
+            QLabel#title { color:#52745b; font-size:26px; font-weight:700; padding:4px 0 2px; }
+            QLabel#hint { color:#789783; font-size:13px; line-height:1.5; padding-bottom:6px; }
             QLabel#error { color:#b24b4b; padding:6px 0; }
-            QLineEdit, QComboBox { background:#ffffff; color:#245c36; border:1px solid #bcd9c4; border-radius:12px; padding:10px 13px; min-height:30px; selection-background-color:#c8e6c9; selection-color:#1b5e20; }
-            QLineEdit:focus, QComboBox:focus { border:2px solid #43a047; }
-            QCheckBox { color:#245c36; padding:6px 0; }
-            QLabel#mode_hint { color:#5a8968; font-size:12px; padding:2px 0; }
-            QPushButton { background:#ffffff; color:#245c36; border:1px solid #bcd9c4; border-radius:12px; padding:9px 18px; min-height:24px; }
-            QPushButton:hover { background:#e8f5e9; border-color:#43a047; }
-            QPushButton[text="登录"] { background:#43a047; color:#ffffff; border-color:#388e3c; border-radius:17px; font-weight:600; }
-            QPushButton[text="登录"]:hover { background:#388e3c; }
+            QLineEdit, QComboBox { background:#ffffff; color:#52745b; border:1px solid #d1e7d6; border-radius:12px; padding:10px 13px; min-height:30px; selection-background-color:#dff2e3; selection-color:#52745b; }
+            QLineEdit:focus, QComboBox:focus { border:2px solid #8fd3a1; }
+            QCheckBox { color:#52745b; padding:6px 0; }
+            QLabel#mode_hint { color:#789783; font-size:12px; padding:2px 0; }
+            QPushButton { background:#ffffff; color:#52745b; border:1px solid #d1e7d6; border-radius:12px; padding:9px 18px; min-height:24px; }
+            QPushButton:hover { background:#eef9f1; border-color:#8fd3a1; }
+            QPushButton[text="登录"] { background:#d9f0de; color:#52745b; border-color:#bfe3c7; border-radius:17px; font-weight:600; }
+            QPushButton[text="登录"]:hover { background:#c9ead0; }
             """
         )
 
@@ -74,12 +74,12 @@ class LoginDialog(QDialog):
         layout.setSpacing(14)
         title = QLabel("Academic Agent", objectName="title")
         layout.addWidget(title)
-        layout.addWidget(
-            QLabel(
-                "登录后即可使用工作区和分析工具。管理员使用预配置模型服务，普通用户需填写自己的 API Key。",
-                objectName="hint",
-            )
+        hint = QLabel(
+            "登录后即可使用工作区和分析工具。管理员使用预配置模型服务，普通用户需填写自己的 API Key。",
+            objectName="hint",
         )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         form = QFormLayout()
         form.setHorizontalSpacing(16)

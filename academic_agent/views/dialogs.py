@@ -1,5 +1,6 @@
 """客户端对话框。"""
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -7,13 +8,17 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFrame,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QSpinBox,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from academic_agent.infrastructure.dependency_manager import install_dependencies
@@ -25,17 +30,54 @@ class DependencyDialog(QDialog):
     def __init__(self, items, parent=None):
         super().__init__(parent)
         self.setWindowTitle("选择安装缺失功能")
-        self.resize(560, 420)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else None
+        available_width = max(420, (available.width() - 48) if available is not None else 680)
+        available_height = max(300, (available.height() - 96) if available is not None else 520)
+        dialog_width = min(680, available_width)
+        dialog_height = min(520, available_height)
+        self.setMinimumSize(min(560, dialog_width), min(380, dialog_height))
+        self.resize(dialog_width, dialog_height)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("检测到以下功能缺少依赖，请选择需要安装的功能："))
+        intro = QLabel("检测到以下功能缺少依赖，请选择需要安装的功能：")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        choices = QWidget()
+        choices_layout = QVBoxLayout(choices)
+        choices_layout.setContentsMargins(4, 4, 4, 4)
+        choices_layout.setSpacing(8)
         self.checks = []
         for item in items:
-            check = QCheckBox(f"{item.feature}：{item.package}\n    {item.description}")
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            check = QCheckBox()
+            check.setMinimumWidth(28)
+            check.setToolTip(f"{item.feature}：{item.package}")
+            text_layout = QVBoxLayout()
+            text_layout.setContentsMargins(0, 0, 0, 0)
+            title = QLabel(f"{item.feature}：{item.package}")
+            title.setStyleSheet("font-weight:600;")
+            description = QLabel(str(item.description))
+            description.setWordWrap(True)
+            description.setStyleSheet("color:#668270;")
+            text_layout.addWidget(title)
+            text_layout.addWidget(description)
+            row_layout.addWidget(check, 0, Qt.AlignmentFlag.AlignTop)
+            row_layout.addLayout(text_layout, 1)
             check.setChecked(True)
             self.checks.append((check, item))
-            layout.addWidget(check)
-        layout.addStretch()
+            choices_layout.addWidget(row)
+        choices_layout.addStretch()
+        scroll.setWidget(choices)
+        layout.addWidget(scroll, 1)
         self.status = QLabel("")
+        self.status.setWordWrap(True)
         layout.addWidget(self.status)
         buttons = QDialogButtonBox()
         self.install_btn = buttons.addButton("安装选中依赖", QDialogButtonBox.ButtonRole.AcceptRole)
@@ -77,7 +119,9 @@ class AlgorithmSelectionDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        layout.addWidget(QLabel(self.configuration.get("description", "请确认本次分析使用的算法和参数。")))
+        description = QLabel(self.configuration.get("description", "请确认本次分析使用的算法和参数。"))
+        description.setWordWrap(True)
+        layout.addWidget(description)
 
         task_options = self.configuration.get("task_options", [])
         self.task_combo = None
@@ -237,10 +281,14 @@ class PlanReviewDialog(QDialog):
         self.setMinimumWidth(700)
         self.resize(760, 620)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"目标：{plan.get('objective', '当前任务')}"))
+        objective = QLabel(f"目标：{plan.get('objective', '当前任务')}")
+        objective.setWordWrap(True)
+        layout.addWidget(objective)
         outputs = "、".join(str(item) for item in plan.get("expected_outputs", []))
         if outputs:
-            layout.addWidget(QLabel(f"预期产物：{outputs}"))
+            outputs_label = QLabel(f"预期产物：{outputs}")
+            outputs_label.setWordWrap(True)
+            layout.addWidget(outputs_label)
 
         document = QTextEdit()
         document.setReadOnly(True)

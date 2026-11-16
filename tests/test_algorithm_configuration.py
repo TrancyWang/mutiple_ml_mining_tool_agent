@@ -20,9 +20,12 @@ def test_planner_exposes_algorithm_choices_for_text_and_ml_tasks():
 
     clustering = planner.create_plan(_request("对文本进行聚类"))
     assert clustering.configuration["kind"] == "text_clustering"
-    assert [item["key"] for item in clustering.configuration["options"]] == [
-        "kmeans", "agglomerative", "dbscan"
-    ]
+    assert {
+        item["key"] for item in clustering.configuration["options"]
+    } >= {
+        "kmeans", "agglomerative", "dbscan", "minibatch_kmeans", "gmm",
+        "spectral", "birch", "affinity_propagation", "meanshift",
+    }
 
     regression = planner.create_plan(_request("训练回归模型"))
     assert regression.configuration["kind"] == "regression"

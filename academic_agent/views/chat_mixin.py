@@ -12,39 +12,23 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QTimer, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox, QPushButton
 
 from academic_agent.infrastructure.workspace_manager import workspace_manager
 from academic_agent.infrastructure.runtime_paths import output_root
+from academic_agent.views.styles import theme_chat_colors
 
 
 class ChatMixin:
     """负责会话状态、上传文件、流式响应和对话区渲染。"""
 
-    _TEXT_MINING_TRIGGER = re.compile(
-        r"文本挖掘|文本聚类|聚类|情感分析|情感识别|关键词提取|主题词|文本预处理|分词|意图识别|响应识别|行为识别"
-    )
-    _TEXT_REPAIR_TRIGGER = re.compile(
-        r"聚类修复|修复聚类|主题簇修复|情感分析修复|修复情感|情绪分析修复|"
-        r"repair[_ -]?(?:cluster|clustering|sentiment)",
-        re.IGNORECASE,
-    )
     _IMAGE_REQUEST_TRIGGER = re.compile(
         r"画图|绘图|作图|图表|可视化|折线图|柱状图|条形图|饼图|散点图|热力图|分布图|词云|"
         r"生成图片|生成图像|显示图片|查看图片|图片结果|图片展示|plot|chart|visuali[sz]e|"
         r"\.(?:png|jpg|jpeg|webp|bmp|gif)\b",
         re.IGNORECASE,
     )
-
-    def _ensure_text_mining_model(self) -> bool:
-        """确认文本挖掘算法所需的本地模型已配置。"""
-        from academic_agent.infrastructure.model_paths import model_components
-
-        status = model_components(os.getenv("PRETRAINED_MODELS_DIR"))
-        if status["has_bge"]:
-            return True
-        return bool(self.configure_text_mining_model())
 
     def eventFilter(self, obj, event):
         composer = getattr(self, "composer", None)
@@ -62,6 +46,7 @@ class ChatMixin:
         else:
             self.messages.clear()
         self.chat_view.clear()
+        self._render_empty_chat()
         if hasattr(self, "_add_current_session_entry"):
             self._add_current_session_entry()
         self.statusBar().showMessage("已新建对话")
@@ -107,6 +92,92 @@ class ChatMixin:
             self.statusBar().showMessage("文件已加载到当前 Agent 会话")
         except Exception as exc:
             QMessageBox.critical(self, "上传失败", str(exc))
+
+    def toggle_voice_input(self) -> None:
+        """开始或结束录音；结束后在后台识别并把文本回填到输入框。"""
+        if self.worker is not None and self.worker.isRunning():
+            self.statusBar().showMessage("当前 Agent 正在处理请求，暂时不能录音")
+            return
+        voice_worker = getattr(self, "_voice_worker", None)
+        if voice_worker is not None and voice_worker.isRunning():
+            return
+
+        recorder = getattr(self, "_voice_recorder", None)
+        if recorder is None:
+            from academic_agent.integrations.voice_recorder import VoiceRecorder
+
+            recorder = VoiceRecorder(self)
+            recorder.error.connect(self._on_voice_recording_error)
+            self._voice_recorder = recorder
+
+        if not recorder.is_recording:
+            if recorder.start():
+                self.voice_btn.setText("⏹ 结束录音")
+                self.voice_btn.setToolTip("结束录音并转换为文字")
+                self.statusBar().showMessage("正在录音，再次点击“结束录音”")
+            return
+
+        self.voice_btn.setEnabled(False)
+        self.send_btn.setEnabled(False)
+        self.voice_btn.setText("识别中…")
+        self.statusBar().showMessage("正在将录音转换为文字…")
+        try:
+            audio_path = recorder.stop()
+        except Exception as exc:
+            self._reset_voice_button()
+            self._on_voice_recording_error(f"保存录音失败：{exc}")
+            return
+        if audio_path is None:
+            self._reset_voice_button()
+            return
+
+        from academic_agent.views.workers import VoiceTranscriptionWorker
+
+        worker = VoiceTranscriptionWorker(str(audio_path))
+        self._voice_worker = worker
+        self._voice_audio_path = audio_path
+        worker.result.connect(self._on_voice_transcription_result)
+        worker.failed.connect(self._on_voice_transcription_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _reset_voice_button(self) -> None:
+        if not hasattr(self, "voice_btn"):
+            return
+        self.voice_btn.setEnabled(True)
+        self.voice_btn.setText("🎙 语音输入")
+        self.voice_btn.setToolTip("录制一段语音，识别后回填到输入框；识别结果可修改后再发送")
+        if self.worker is None or not self.worker.isRunning():
+            self.send_btn.setEnabled(True)
+
+    def _cleanup_voice_audio(self) -> None:
+        audio_path = getattr(self, "_voice_audio_path", None)
+        if audio_path is not None:
+            try:
+                Path(audio_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._voice_audio_path = None
+
+    def _on_voice_recording_error(self, message: str) -> None:
+        self._reset_voice_button()
+        self.statusBar().showMessage(message)
+        QMessageBox.warning(self, "语音输入", message)
+
+    def _on_voice_transcription_result(self, text: str, status: str) -> None:
+        self._cleanup_voice_audio()
+        self._reset_voice_button()
+        existing = self.composer.toPlainText().strip()
+        self.composer.setPlainText(f"{existing}\n{text}".strip() if existing else text)
+        self.composer.moveCursor(QTextCursor.MoveOperation.End)
+        self.composer.setFocus()
+        self.statusBar().showMessage(f"{status}；请检查文字后发送")
+
+    def _on_voice_transcription_failed(self, message: str) -> None:
+        self._cleanup_voice_audio()
+        self._reset_voice_button()
+        self.statusBar().showMessage(message)
+        QMessageBox.warning(self, "语音识别失败", message)
 
     def _choose_upload_file(self) -> str | None:
         """打开稳定的单文件选择器，避免原生选择器出现文件无法确认的问题。"""
@@ -162,18 +233,20 @@ class ChatMixin:
         self.statusBar().showMessage(f"正在对话区显示图片：{path.name}")
 
     def send_message(self) -> None:
+        recorder = getattr(self, "_voice_recorder", None)
+        voice_worker = getattr(self, "_voice_worker", None)
+        if (recorder is not None and recorder.is_recording) or (
+            voice_worker is not None and voice_worker.isRunning()
+        ):
+            self.statusBar().showMessage("请先结束当前语音输入，等待文字回填后再发送")
+            return
         text = self.composer.toPlainText().strip()
         if not text or (self.worker and self.worker.isRunning()):
             return
         if not self.ensure_authenticated():
             return
-        if (
-            self._TEXT_MINING_TRIGGER.search(text)
-            and not self._TEXT_REPAIR_TRIGGER.search(text)
-            and not self._ensure_text_mining_model()
-        ):
-            self.statusBar().showMessage("未设置文本挖掘模型，已取消本次任务")
-            return
+        # 自然语言先交给 Runtime 结合上下文判断意图。提到算法不代表要运行，
+        # 也不代表需要 BGE；具体依赖由实际选中的工具在执行时检查并返回。
         if hasattr(self, "_mark_active_session"):
             self._mark_active_session(text)
         self.composer.clear()
@@ -201,6 +274,13 @@ class ChatMixin:
             {"role": message.get("role", "user"), "content": message.get("content", "")}
             for message in self.messages[:-1]
         ]
+        self._start_stream_worker(model_messages)
+
+    def _start_stream_worker(
+        self,
+        model_messages: list[dict],
+        resume_run_id: str | None = None,
+    ) -> None:
         work_mode = getattr(self, "agent_mode", "work") == "work"
         from academic_agent.views.workers import StreamWorker
 
@@ -210,12 +290,63 @@ class ChatMixin:
             self.session_id,
             str(workspace_manager.root) if work_mode else None,
             chat_only=not work_mode,
+            resume_run_id=resume_run_id,
         )
         self.worker.chunk.connect(self.on_chunk)
         self.worker.progress.connect(self.on_progress)
         self.worker.failed.connect(self.on_failed)
         self.worker.finished_ok.connect(self.on_finished)
         self.worker.start()
+
+    def resume_agent_run(self, run: dict) -> None:
+        """从持久化检查点继续一次被中断的 Work 运行。"""
+        if self.worker and self.worker.isRunning():
+            self.statusBar().showMessage("当前已有任务正在运行")
+            return
+        run_id = str(run.get("run_id") or "")
+        request = run.get("request") if isinstance(run.get("request"), dict) else {}
+        if not run_id or not request:
+            self.statusBar().showMessage("恢复信息不完整，无法继续任务")
+            return
+        workspace_path = str(run.get("workspace_path") or request.get("workspace_path") or "")
+        if workspace_path and Path(workspace_path).is_dir() and hasattr(self, "controller"):
+            if Path(workspace_path).resolve() != self.controller.projects.current_root:
+                self.controller.projects.activate(workspace_path)
+                if hasattr(self, "_refresh_workspace_label"):
+                    self._refresh_workspace_label()
+                if hasattr(self, "_load_project_list"):
+                    self._load_project_list()
+        self.session_id = str(request.get("session_id") or self.session_id)
+        self.messages = [
+            {
+                "role": str(message.get("role") or "user"),
+                "content": str(message.get("content") or ""),
+                "_image_paths": [],
+                "_show_images": False,
+            }
+            for message in request.get("messages", [])
+            if isinstance(message, dict) and message.get("role") in {"user", "assistant", "system"}
+        ]
+        self.current_assistant = ""
+        self._agent_auto_mode = bool((run.get("runtime") or {}).get("auto_mode", False))
+        self.messages.append({
+            "role": "assistant",
+            "content": "正在从上次中断位置恢复…",
+            "_image_paths": [],
+            "_show_images": False,
+            "_execution_steps": [],
+            "_execution_logs": [],
+            "_artifacts_before": [],
+            "_artifact_paths": [],
+        })
+        self._render_messages()
+        self.send_btn.setEnabled(False)
+        self.statusBar().showMessage("正在恢复上次中断的任务…")
+        model_messages = [
+            {"role": message.get("role", "user"), "content": message.get("content", "")}
+            for message in self.messages[:-1]
+        ]
+        self._start_stream_worker(model_messages, resume_run_id=run_id)
 
     def on_progress(self, event: dict) -> None:
         """把 Planner 和 Tool Executor 的真实事件转换为用户可见步骤。"""
@@ -243,6 +374,19 @@ class ChatMixin:
                     "label": str(event.get("label", "准备任务")),
                     "status": "running",
                 })
+        elif event_type == "intent_recognized" and event.get("intent") in {
+            "lightweight_chat", "chat", "clarify",
+        }:
+            finish_active()
+            clarifying = event.get("intent") == "clarify"
+            steps[:] = [{
+                "key": str(event["intent"]),
+                "label": "结合上下文确认你的需求" if clarifying else "理解问题，直接回答",
+                "status": "running",
+            }]
+            self.statusBar().showMessage(
+                "正在结合上下文确认你的需求…" if clarifying else "已理解为对话问题，正在回答…"
+            )
         elif event_type == "plan_created":
             finish_active()
             created_plan_steps = []
@@ -279,6 +423,14 @@ class ChatMixin:
             else:
                 matched_review["status"] = "running"
             self._show_plan_review(event.get("plan") or {}, event.get("board") or {})
+        elif event_type == "plan_review_skipped":
+            reason = str(event.get("reason") or "low_risk_read")
+            if reason in {"simple_document_read", "low_risk_read"}:
+                logs.append({
+                    "message": "简单只读任务已跳过人工计划确认，直接执行文档读取。",
+                    "level": "info",
+                })
+                self.statusBar().showMessage("简单只读任务，已跳过计划确认")
         elif event_type == "clarification_required":
             info = event.get("information") or {}
             key = f"clarification_{info.get('info_id', len(steps))}"
@@ -306,18 +458,24 @@ class ChatMixin:
                 if matched is None:
                     matched = {
                         "key": f"task_{task_id}",
-                        "label": str(task.get("title", "执行任务")),
+                        "label": self._agent_task_label(task),
                         "status": "pending",
                     }
                     steps.append(matched)
                 matched["status"] = self._ui_task_status(task.get("status"))
+        elif event_type == "agent_assigned":
+            logs.append({
+                "message": f"{event.get('agent_name', '专业 Agent')} 接手任务 {event.get('task_id', '')}",
+                "level": "info",
+            })
         elif event_type == "task_started":
             task = event.get("task") or {}
             task_id = str(task.get("id", "task"))
             matched = next((step for step in steps if step.get("key") == f"task_{task_id}"), None)
             if matched is None:
-                matched = {"key": f"task_{task_id}", "label": str(task.get("title", "执行任务"))}
+                matched = {"key": f"task_{task_id}", "label": self._agent_task_label(task)}
                 steps.append(matched)
+            matched["label"] = self._agent_task_label(task)
             matched["status"] = "running"
         elif event_type == "task_checked":
             task_id = str(event.get("task_id", "task"))
@@ -355,7 +513,7 @@ class ChatMixin:
                 if not any(step.get("key") == f"task_{task_id}" for step in steps):
                     steps.append({
                         "key": f"task_{task_id}",
-                        "label": str(task.get("title", "新增任务")),
+                        "label": self._agent_task_label(task),
                         "status": self._ui_task_status(task.get("status")),
                     })
         elif event_type in {"task_board_state", "convergence_completed", "convergence_blocked"}:
@@ -449,6 +607,12 @@ class ChatMixin:
                 response["status"] = "completed"
         self._flash_newly_completed_steps(previous_status, steps)
         self._schedule_stream_render()
+
+    @staticmethod
+    def _agent_task_label(task: dict) -> str:
+        title = str(task.get("title") or "执行任务")
+        agent = str(task.get("agent_name") or "")
+        return f"{agent} · {title}" if agent else title
 
     @staticmethod
     def _ui_task_status(status: object) -> str:
@@ -894,8 +1058,12 @@ class ChatMixin:
         self._render_messages()
 
     def _render_messages(self) -> None:
+        if not self.messages:
+            self._render_empty_chat()
+            return
         parts = []
-        primary = self.accent_color.darker(145).name()
+        colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
+        primary = colors["strong"]
         for msg in self.messages:
             role_key = msg.get("role", "assistant")
             role = "你" if role_key == "user" else "Agent"
@@ -933,14 +1101,14 @@ class ChatMixin:
                 parts.append(
                     f'<div style="text-align:right; margin:12px 12px 12px 28%;">'
                     f'<span style="color:{primary}; font-weight:600;">{role}</span><br>'
-                    f'<span style="background:#f0faf3; border:1px solid #b9ddc3; '
+                    f'<span style="background:{colors["surface_alt"]}; border:1px solid {colors["border"]}; '
                     f'padding:11px 15px; border-radius:16px;">{body}</span></div>'
                 )
             else:
                 parts.append(
                     f'<div style="text-align:left; margin:12px 28% 12px 12%;">'
                     f'<span style="color:{primary}; font-weight:600;">{role}</span><br>'
-                    f'<span style="background:#ffffff; border:1px solid #d8f0dd; '
+                    f'<span style="background:{colors["surface"]}; border:1px solid {colors["border"]}; '
                     f'padding:11px 15px; border-radius:14px;">'
                     f'{steps_html}{logs_html}{body}{image_html}{artifact_html}</span></div>'
                 )
@@ -959,15 +1127,43 @@ class ChatMixin:
         finally:
             self.chat_view.setUpdatesEnabled(True)
 
-    @staticmethod
-    def _render_execution_steps(steps: list[dict]) -> str:
+    def _render_empty_chat(self) -> None:
+        """在没有消息时展示产品化欢迎页和可点击的常用入口。"""
+        if not hasattr(self, "chat_view") or self.messages:
+            return
+        colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
+        primary = colors["strong"]
+        accent = colors["accent"]
+        self.chat_view.setHtml(
+            f"""
+            <div style="text-align:center; margin:86px 8% 20px 8%; color:{primary};">
+              <div style="margin:0 auto 16px auto; width:52px; height:52px;" align="center">
+                <span style="display:inline-block; background:{accent}; color:#ffffff; padding:13px 17px; border-radius:16px;">
+                  <b style="font-size:22px;">A</b>
+                </span>
+              </div>
+              <h1 style="font-size:25px; margin:0 0 8px 0;">今天想完成什么？</h1>
+              <p style="color:{colors["muted"]}; font-size:13px; margin:0 0 25px 0;">
+                从资料阅读、数据分析到项目文件处理，输入一句话即可开始。
+              </p>
+              <div style="margin:0 auto; max-width:650px;">
+                <a href="agent-prompt://read" style="text-decoration:none; color:{primary}; background:{colors["surface_alt"]}; border:1px solid {colors["border"]}; padding:10px 14px; border-radius:11px; margin:5px;">读取文档</a>
+                <a href="agent-prompt://data" style="text-decoration:none; color:{primary}; background:{colors["surface_alt"]}; border:1px solid {colors["border"]}; padding:10px 14px; border-radius:11px; margin:5px;">分析数据</a>
+                <a href="agent-prompt://paper" style="text-decoration:none; color:{primary}; background:{colors["surface_alt"]}; border:1px solid {colors["border"]}; padding:10px 14px; border-radius:11px; margin:5px;">整理文献</a>
+              </div>
+            </div>
+            """
+        )
+
+    def _render_execution_steps(self, steps: list[dict]) -> str:
         if not steps:
             return ""
+        colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
         icons = {
-            "completed": ("✓", "#2e7d45"),
-            "running": ("●", "#43a047"),
-            "failed": ("×", "#b24b4b"),
-            "pending": ("○", "#8aa492"),
+            "completed": ("✓", colors["success"]),
+            "running": ("●", colors["accent"]),
+            "failed": ("×", colors["error"]),
+            "pending": ("○", colors["muted"]),
         }
         lines = []
         for step in steps:
@@ -975,37 +1171,37 @@ class ChatMixin:
             label = html.escape(str(step.get("label", "执行步骤")))
             flashing = float(step.get("_completion_flash_until", 0) or 0) > time.monotonic()
             row_style = (
-                "margin:3px 0; padding:2px 6px; background:#e8f5e9; border-radius:6px;"
+                f"margin:3px 0; padding:2px 6px; background:{colors['surface_alt']}; border-radius:6px;"
                 if flashing else "margin:3px 0; padding:2px 6px;"
             )
             lines.append(
-                f'<div style="{row_style} color:#55745f;">'
+                f'<div style="{row_style} color:{colors["text"]};">'
                 f'<span style="color:{color}; font-weight:700;">{icon}</span>&nbsp;{label}</div>'
             )
         return (
-            '<div style="background:#f5faf6; border:1px solid #d8eadc; '
+            f'<div style="background:{colors["surface_alt"]}; border:1px solid {colors["border"]}; '
             'padding:10px 12px; margin:4px 0 12px;">'
-            '<div style="color:#245c36; font-weight:700; margin-bottom:6px;">执行过程</div>'
+            f'<div style="color:{colors["strong"]}; font-weight:700; margin-bottom:6px;">执行过程</div>'
             + "".join(lines)
             + '</div>'
         )
 
-    @staticmethod
-    def _render_execution_logs(logs: list[dict]) -> str:
+    def _render_execution_logs(self, logs: list[dict]) -> str:
         if not logs:
             return ""
+        colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
         lines = []
         for entry in logs[-30:]:
-            color = "#a33f3f" if entry.get("level") == "error" else "#4f6f59"
+            color = colors["error"] if entry.get("level") == "error" else colors["muted"]
             message = html.escape(str(entry.get("message", "")))
             lines.append(
                 f'<div style="margin:3px 0; color:{color}; font-family:Menlo,Monaco,monospace; '
                 f'font-size:12px;">› {message}</div>'
             )
         return (
-            '<div style="background:#fbfdfb; border:1px solid #e0ece3; '
+            f'<div style="background:{colors["surface"]}; border:1px solid {colors["border"]}; '
             'padding:9px 12px; margin:0 0 12px;">'
-            '<div style="color:#245c36; font-weight:700; margin-bottom:5px;">运行日志</div>'
+            f'<div style="color:{colors["strong"]}; font-weight:700; margin-bottom:5px;">运行日志</div>'
             + "".join(lines)
             + '</div>'
         )
@@ -1058,14 +1254,15 @@ class ChatMixin:
     def _render_agent_body(self, content: str) -> str:
         """把待确认标记转换为对话区中的可点击确认链接。"""
         body = html.escape(content).replace("\n", "<br>")
+        colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
 
         def replace_confirmation(match: re.Match[str]) -> str:
             operation_id = match.group(1)
             if operation_id in self.confirmed_operations:
-                return '<br><span style="color:#4f805f; font-weight:600;">已确认执行</span>'
+                return f'<br><span style="color:{colors["success"]}; font-weight:600;">已确认执行</span>'
             return (
                 f'<br><a href="agent-confirm://{operation_id}" '
-                'style="color:#1769aa; font-weight:600; text-decoration:none;">'
+                f'style="color:{colors["link"]}; font-weight:600; text-decoration:none;">'
                 "点击确认执行</a>"
             )
 
@@ -1073,6 +1270,19 @@ class ChatMixin:
 
     def _handle_chat_link(self, url) -> None:
         """处理对话区中的文件操作确认链接。"""
+        if url.scheme() == "agent-prompt":
+            prompts = {
+                "read": "请帮我读一下这个文件，并提取其中的关键信息。",
+                "data": "请查看当前文件的数据概览，包括行数、字段、缺失值和适合的分析方向。",
+                "paper": "请帮我整理这篇文献的研究问题、方法、主要结论和局限。",
+            }
+            key = url.host() or url.path().lstrip("/")
+            prompt = prompts.get(key)
+            if prompt:
+                self.composer.setPlainText(prompt)
+                self.composer.setFocus()
+                self.statusBar().showMessage("已填入任务模板，可以直接发送或继续修改")
+            return
         if url.scheme() == "agent-file":
             self._open_artifact_link(url)
             return
@@ -1206,16 +1416,18 @@ class ChatMixin:
                 path = workspace_manager.root / path
             if path.is_file():
                 uri = path.resolve().as_uri()
+                colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
                 rendered.append(
                     f'<br><img src="{html.escape(uri, quote=True)}" width="{display_width}">'
-                    f'<br><span style="color:{self.accent_color.darker(120).name()}">'
+                    f'<br><span style="color:{colors["accent"]}">'
                     f'图片：{html.escape(path.name)}</span>'
                 )
             else:
                 missing.append(str(candidate))
         if missing and not rendered:
+            colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
             rendered.append(
-                '<br><span style="color:#b26a00;">图片生成结果已返回，但当前界面暂未找到图片文件：'
+                f'<br><span style="color:{colors["warning"]};">图片生成结果已返回，但当前界面暂未找到图片文件：'
                 f'{html.escape(Path(missing[0]).name)}（请检查应用同级的 output 目录）</span>'
             )
         return "".join(rendered)
@@ -1224,6 +1436,7 @@ class ChatMixin:
         """渲染经过路径校验的生成文件链接，不展示文件正文。"""
         links = []
         seen: set[str] = set()
+        colors = theme_chat_colors(self.accent_color, self.effective_theme_mode)
         for value in paths or []:
             candidate = Path(str(value)).expanduser()
             if not candidate.is_absolute():
@@ -1238,16 +1451,16 @@ class ChatMixin:
             links.append(
                 f'<div style="margin:6px 0;">'
                 f'<a href="agent-file://open/{token}" '
-                'style="color:#1769aa; font-weight:600; text-decoration:none;">'
+                f'style="color:{colors["link"]}; font-weight:600; text-decoration:none;">'
                 f'打开文件：{html.escape(candidate.name)}</a>'
-                f'&nbsp;<span style="color:#789080;">{html.escape(suffix)}</span></div>'
+                f'&nbsp;<span style="color:{colors["muted"]};">{html.escape(suffix)}</span></div>'
             )
         if not links:
             return ""
         return (
-            '<div style="background:#f7fbf8; border:1px solid #d8eadc; '
+            f'<div style="background:{colors["surface_alt"]}; border:1px solid {colors["border"]}; '
             'padding:10px 12px; margin:12px 0 4px;">'
-            '<div style="color:#245c36; font-weight:700; margin-bottom:5px;">结果文件</div>'
+            f'<div style="color:{colors["strong"]}; font-weight:700; margin-bottom:5px;">结果文件</div>'
             + "".join(links)
             + '</div>'
         )
@@ -1269,9 +1482,15 @@ class ChatMixin:
         self.send_btn.setEnabled(True)
         if hasattr(self, "_load_history_sessions"):
             QTimer.singleShot(600, self._load_history_sessions)
+        if hasattr(self, "_load_project_list"):
+            QTimer.singleShot(650, self._load_project_list)
         self.statusBar().showMessage("就绪")
 
     def on_failed(self, message: str) -> None:
+        if not self.messages:
+            self.send_btn.setEnabled(True)
+            self.statusBar().showMessage("请求失败：当前会话已切换")
+            return
         if self.messages:
             for step in self.messages[-1].get("_execution_steps", []):
                 if step.get("status") == "running":

@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-/opt/miniconda3/envs/trancy_tool/bin/python}"
-SOURCE_ROOT="${VIDEO_AGENT_SOURCE_ROOT:-$PROJECT_DIR/../video_text_mutiplemodal_agent}"
+SOURCE_ROOT="${TEXT_MINING_SOURCE_ROOT:-$PROJECT_DIR/../text_mining_tools_agent_client_cpu}"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "找不到 Python：$PYTHON_BIN" >&2
@@ -34,7 +34,7 @@ export PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-$PROJECT_DIR/.pyinstall
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$PROJECT_DIR/.build_cache/matplotlib}"
 mkdir -p "$PYINSTALLER_CONFIG_DIR" "$MPLCONFIGDIR"
 
-VIDEO_AGENT_SOURCE_ROOT="$SOURCE_ROOT" \
+TEXT_MINING_SOURCE_ROOT="$SOURCE_ROOT" \
   "$PYTHON_BIN" -m PyInstaller \
   --clean \
   --noconfirm \

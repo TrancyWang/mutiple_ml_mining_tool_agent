@@ -2,7 +2,7 @@
 """Academic Agent macOS onedir/.app 构建配置。
 
 默认不携带本地大模型；构建时设置 INCLUDE_LOCAL_MODELS=1 才会把
-video_text_mutiplemodal_agent/pretrain_models 一起复制进应用包。
+text_mining_tools_agent_client_cpu/pretrain_models 一起复制进应用包。
 """
 
 from pathlib import Path
@@ -22,17 +22,17 @@ from PyInstaller.utils.hooks import (
 PROJECT_ROOT = Path(SPECPATH).resolve()
 SOURCE_ROOT = Path(
     os.getenv(
-        "VIDEO_AGENT_SOURCE_ROOT",
-        str(PROJECT_ROOT.parent / "video_text_mutiplemodal_agent"),
+        "TEXT_MINING_SOURCE_ROOT",
+        str(PROJECT_ROOT.parent / "text_mining_tools_agent_client_cpu"),
     )
 ).expanduser().resolve()
-STAGE3_ROOT = SOURCE_ROOT / "src_codes" / "main_process_agent" / "text_processor_subagent_stage_3"
+SRC_CODE_ROOT = SOURCE_ROOT / "src_code"
 
-if not STAGE3_ROOT.is_dir():
+if not SRC_CODE_ROOT.is_dir():
     raise SystemExit(
-        "找不到源项目的 text_processor_subagent_stage_3："
-        f" {STAGE3_ROOT}\n"
-        "请设置 VIDEO_AGENT_SOURCE_ROOT 指向 video_text_mutiplemodal_agent。"
+        "找不到新版文本算法源项目的 src_code："
+        f" {SRC_CODE_ROOT}\n"
+        "请设置 TEXT_MINING_SOURCE_ROOT 指向 text_mining_tools_agent_client_cpu。"
     )
 
 
@@ -47,12 +47,8 @@ datas = [
         "academic_agent/algorithms",
     ),
     (
-        str(STAGE3_ROOT),
-        "video_text_mutiplemodal_agent/src_codes/main_process_agent/text_processor_subagent_stage_3",
-    ),
-    (
-        str(SOURCE_ROOT / "dicts"),
-        "video_text_mutiplemodal_agent/dicts",
+        str(SRC_CODE_ROOT),
+        "text_mining_tools_agent_client_cpu/src_code",
     ),
     (str(PROJECT_ROOT / ".env.example"), "."),
 ]
@@ -70,30 +66,29 @@ model_root = SOURCE_ROOT / "pretrain_models"
 if include_models:
     if not model_root.is_dir():
         raise SystemExit(f"INCLUDE_LOCAL_MODELS=1 但模型目录不存在：{model_root}")
-    datas.append((str(model_root), "video_text_mutiplemodal_agent/pretrain_models"))
+    datas.append((str(model_root), "text_mining_tools_agent_client_cpu/pretrain_models"))
 
 
 binaries = []
 hiddenimports = [
     # 源项目通过 importlib 按功能加载，必须显式告诉 PyInstaller。
-    "text_processor_subagent_stage_3",
-    "text_processor_subagent_stage_3.common",
-    "text_processor_subagent_stage_3.common.data_preprocess",
-    "text_processor_subagent_stage_3.common.textEmbedding",
-    "text_processor_subagent_stage_3.common.remark_rule_enginee",
-    "text_processor_subagent_stage_3.clustering",
-    "text_processor_subagent_stage_3.clustering.clustering",
-    "text_processor_subagent_stage_3.clustering.textKeyBert_cluster_sentence_fuse_agent",
-    "text_processor_subagent_stage_3.sentiment",
-    "text_processor_subagent_stage_3.sentiment.chinese_sentiment_bert_analysis",
-    "text_processor_subagent_stage_3.sentiment.sentiment_general_analysis",
-    "text_processor_subagent_stage_3.sentiment.textkeyBert_sentiment_sentence",
-    "text_processor_subagent_stage_3.utils",
+    "src_code",
+    "src_code.preprocessing",
+    "src_code.preprocessing.data_preprocess",
+    "src_code.text_mining",
+    "src_code.text_mining.embeddings_models",
+    "src_code.text_mining.embeddings_models.textEmbedding",
+    "src_code.text_mining.sentiment",
+    "src_code.text_mining.sentiment.chinese_sentiment_bert_analysis",
+    "src_code.text_mining.sentiment.sentiment_general_analysis",
+    "src_code.text_mining.keyword_extractor",
+    "src_code.text_mining.keyword_extractor.textKeyBert_cluster_sentence_fuse_pro",
     "umap",
     "chromadb.telemetry.product.posthog",
     "milvus_lite",
     "milvus_lite.server_manager",
     "milvus_lite.adapter.grpc.server",
+    "mysql.connector",
 ]
 
 # 这些库含有动态库、数据文件或运行时元数据。不要使用 collect_all：
@@ -157,7 +152,7 @@ hiddenimports = sorted(set(hiddenimports))
 
 a = Analysis(
     [str(PROJECT_ROOT / "qt_client.py")],
-    pathex=[str(PROJECT_ROOT), str(STAGE3_ROOT.parent)],
+    pathex=[str(PROJECT_ROOT), str(SOURCE_ROOT)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -193,4 +188,7 @@ app = BUNDLE(
     name="AcademicAgent.app",
     icon=str(PROJECT_ROOT / "resources" / "academic_agent_icon.icns"),
     bundle_identifier="com.academic.agent",
+    info_plist={
+        "NSMicrophoneUsageDescription": "Academic Agent 需要使用麦克风，将你的语音转换为对话文字。",
+    },
 )

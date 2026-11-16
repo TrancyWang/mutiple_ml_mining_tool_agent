@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStatusBar,
     QTextBrowser,
+    QTreeWidgetItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -38,7 +39,14 @@ from academic_agent.views.auth import LoginDialog
 from academic_agent.views.chat_mixin import ChatMixin
 from academic_agent.views.feature_mixin import FeaturePanelMixin
 from academic_agent.views.file_mixin import FilePanelMixin
-from academic_agent.views.styles import BASE_STYLESHEET, build_stylesheet
+from academic_agent.views.styles import (
+    BASE_STYLESHEET,
+    DEFAULT_ACCENT,
+    THEME_LIGHT,
+    build_stylesheet,
+    normalize_theme_mode,
+    theme_preset,
+)
 from academic_agent.views.workspace_mixin import WorkspaceMixin
 from academic_agent.views.model_mixin import ModelMixin
 from academic_agent.infrastructure.runtime_paths import resource_root
@@ -124,6 +132,7 @@ class CodexChatWindow(
         )
         self.controller = ApplicationController.create(self.state)
         self.worker = None
+        self._recovery_prompted = False
         self.settings_window = None
         self.theme_settings = QSettings("AcademicAgent", "QtClient")
         self.model_settings = QSettings("AcademicAgent", "Models")
@@ -149,13 +158,27 @@ class CodexChatWindow(
                 source_video_text_adapter.set_custom_dictionary(saved_dictionary)
         except Exception:
             pass
-        saved_color = self.theme_settings.value("accent_color", "#43A047")
+        saved_color = str(self.theme_settings.value("accent_color", DEFAULT_ACCENT) or "").strip()
+        # 迁移旧版默认墨绿色和历史上保存的低明度绿色，保持当前浅绿色视觉基线。
+        saved_qcolor = QColor(saved_color)
+        if (
+            saved_color.lower() in {"#43a047", "#4caf50", "#388e3c"}
+            or not saved_qcolor.isValid()
+            or saved_qcolor.lightness() < 170
+        ):
+            saved_color = DEFAULT_ACCENT
         self.accent_color = QColor(str(saved_color))
         if not self.accent_color.isValid():
-            self.accent_color = QColor("#43A047")
+            self.accent_color = QColor(DEFAULT_ACCENT)
+        self.theme_mode = normalize_theme_mode(
+            self.theme_settings.value("theme_mode", THEME_LIGHT)
+        )
+        self.effective_theme_mode = self.theme_mode
         self._build_ui()
         self._load_project_list()
         self._load_history_sessions()
+        if self.auth_session is not None:
+            QTimer.singleShot(350, self._offer_recoverable_run)
         self.file_refresh_timer = QTimer(self)
         self.file_refresh_timer.setInterval(2000)
         self.file_refresh_timer.timeout.connect(self._refresh_open_file_panel)
@@ -177,8 +200,10 @@ class CodexChatWindow(
         session = dialog.session
         env_file = self.controller.auth.apply(session)
         self.state.login(session)
+        self._recovery_prompted = False
         if hasattr(self, "chat_view"):
             self.chat_view.clear()
+            self._render_empty_chat()
         self._active_history_item = None
         self._load_project_list()
         self._load_history_sessions()
@@ -191,7 +216,37 @@ class CodexChatWindow(
         self.controller.agent.reset()
         self._update_auth_status()
         self._initialize_agent()
+        QTimer.singleShot(350, self._offer_recoverable_run)
         return True
+
+    def _offer_recoverable_run(self) -> None:
+        """登录后提示是否继续最近一次未完成的 Work 运行。"""
+        if self._recovery_prompted or self.auth_session is None:
+            return
+        self._recovery_prompted = True
+        runs = self.controller.sessions.list_recoverable_runs(limit=1)
+        if not runs:
+            return
+        run = runs[0]
+        request = run.get("request") if isinstance(run.get("request"), dict) else {}
+        query = next(
+            (
+                str(message.get("content") or "").strip()
+                for message in reversed(request.get("messages", []))
+                if isinstance(message, dict) and message.get("role") == "user"
+            ),
+            "未命名任务",
+        )
+        status = str(run.get("status") or "running")
+        answer = QMessageBox.question(
+            self,
+            "发现未完成任务",
+            f"检测到一次未完成的 Agent 任务（{status}）：\n\n{query[:240]}\n\n是否从上次保存的检查点继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.resume_agent_run(run)
 
     def open_login(self) -> None:
         """打开清晰可见的账户登录入口。"""
@@ -209,6 +264,7 @@ class CodexChatWindow(
         self.controller.auth.logout(username)
         self.state.logout()
         self.chat_view.clear()
+        self._render_empty_chat()
         self.controller.agent.reset()
         self._update_auth_status()
         self._load_project_list()
@@ -256,7 +312,8 @@ class CodexChatWindow(
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#dff2e4"))
+        icon_background = QColor(theme_preset(self.effective_theme_mode)["selection"])
+        painter.setBrush(icon_background)
         painter.drawEllipse(1, 1, 30, 30)
         painter.setPen(self.accent_color.darker(145))
         font = painter.font()
@@ -277,6 +334,21 @@ class CodexChatWindow(
         from academic_agent.views.main_layout import build_main_window
 
         build_main_window(self)
+
+    def resizeEvent(self, event) -> None:
+        """在窗口尺寸变化时切换三栏/紧凑布局，避免输入区被挤压。"""
+        super().resizeEvent(event)
+        if not hasattr(self, "main_splitter"):
+            return
+        compact = self.width() < 1080
+        if compact == bool(getattr(self, "_compact_ui", False)):
+            return
+        self._compact_ui = compact
+        self._set_mode_visibility()
+        if compact:
+            self.main_splitter.setSizes([232, max(460, self.width() - 252), 0])
+        else:
+            self.main_splitter.setSizes([252, max(520, self.width() - 600), 312])
 
     def _load_history_sessions(self) -> None:
         """从 SQLite 恢复最近的用户-Agent完整会话。"""
@@ -316,27 +388,61 @@ class CodexChatWindow(
                 self.recent_sessions.setCurrentItem(item)
 
     def _load_project_list(self) -> None:
-        """Work 模式显示当前用户使用过的全部项目。"""
+        """以“工作区 → 对话”的树形结构显示用户项目。"""
         if not hasattr(self, "sessions"):
             return
         self.sessions.clear()
         if self.auth_session is None:
-            self.sessions.addItem("登录后加载项目")
+            self.sessions.addTopLevelItem(QTreeWidgetItem(["登录后加载项目"]))
+            return
+        if self.agent_mode != "work":
+            self.sessions.addTopLevelItem(QTreeWidgetItem(["工作区仅在 Work 模式显示"]))
             return
         current_path = str(self.controller.projects.current_root)
         projects = self.controller.projects.list_projects(limit=30)
         for project in projects:
-            item = QListWidgetItem(str(project["name"]))
-            item.setToolTip(
+            project_path = str(project["workspace_path"])
+            item = QTreeWidgetItem([str(project["name"])])
+            item.setToolTip(0,
                 f"{project['workspace_path']}\n{project.get('session_count', 0)} 个会话"
             )
-            item.setData(Qt.ItemDataRole.UserRole, project)
-            self.sessions.addItem(item)
-            if project["workspace_path"] == current_path:
+            item.setData(0, Qt.ItemDataRole.UserRole, project)
+            self.sessions.addTopLevelItem(item)
+            conversations = self.controller.sessions.list_sessions(
+                limit=20,
+                workspace_path=project_path,
+            )
+            if conversations:
+                for session in conversations:
+                    title = str(session.get("title") or "新会话").replace("\n", " ").strip()
+                    display_title = title if len(title) <= 42 else title[:42].rstrip() + "…"
+                    child = QTreeWidgetItem([display_title])
+                    child.setToolTip(0,
+                        f"{title}\n{session.get('message_count', 0)} 条消息\n点击加载完整会话"
+                    )
+                    child.setData(0, Qt.ItemDataRole.UserRole, session)
+                    item.addChild(child)
+            else:
+                empty = QTreeWidgetItem(["暂无对话"])
+                empty.setDisabled(True)
+                item.addChild(empty)
+            item.setExpanded(project_path == current_path)
+            if project_path == current_path:
                 self.sessions.setCurrentItem(item)
 
-    def _select_project(self, item: QListWidgetItem) -> None:
-        project = item.data(Qt.ItemDataRole.UserRole)
+    @staticmethod
+    def _navigation_item_data(item):
+        if isinstance(item, QTreeWidgetItem):
+            return item.data(0, Qt.ItemDataRole.UserRole)
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _select_project(self, item: QTreeWidgetItem) -> None:
+        if item.parent() is not None:
+            session = self._navigation_item_data(item)
+            if isinstance(session, dict) and session.get("session_id"):
+                self._load_history_session(item)
+            return
+        project = self._navigation_item_data(item)
         if not isinstance(project, dict):
             return
         target = Path(str(project.get("workspace_path", ""))).expanduser()
@@ -349,13 +455,19 @@ class CodexChatWindow(
 
     def _show_project_context_menu(self, position) -> None:
         item = self.sessions.itemAt(position)
-        if item is None or not isinstance(item.data(Qt.ItemDataRole.UserRole), dict):
+        if item is None or not isinstance(self._navigation_item_data(item), dict):
             return
         self.sessions.setCurrentItem(item)
+        if item.parent() is not None:
+            menu = QMenu(self.sessions)
+            delete_action = menu.addAction("永久删除对话")
+            delete_action.triggered.connect(self._delete_selected_session)
+            menu.exec(self.sessions.viewport().mapToGlobal(position))
+            return
         menu = QMenu(self.sessions)
         delete_action = menu.addAction("永久删除项目…")
         delete_action.triggered.connect(self._delete_selected_project)
-        menu.exec(self.sessions.mapToGlobal(position))
+        menu.exec(self.sessions.viewport().mapToGlobal(position))
 
     def _show_session_context_menu(self, position) -> None:
         item = self.recent_sessions.itemAt(position)
@@ -372,7 +484,10 @@ class CodexChatWindow(
             QMessageBox.information(self, "请稍候", "当前对话仍在运行，请结束后再删除。")
             return
         item = self.recent_sessions.currentItem()
-        session = item.data(Qt.ItemDataRole.UserRole) if item else None
+        tree_item = self.sessions.currentItem() if hasattr(self, "sessions") else None
+        if tree_item is not None and tree_item.parent() is not None:
+            item = tree_item
+        session = self._navigation_item_data(item) if item else None
         if not isinstance(session, dict):
             return
         title = str(session.get("title") or item.text()).replace("\n", " ").strip()
@@ -390,8 +505,10 @@ class CodexChatWindow(
             deleted = self.controller.sessions.delete_session(session)
             if active:
                 self.chat_view.clear()
+                self._render_empty_chat()
                 self._active_history_item = None
             self._load_history_sessions()
+            self._load_project_list()
             self.statusBar().showMessage(f"对话已永久删除，共清理 {deleted} 条消息")
         except Exception as exc:
             QMessageBox.critical(self, "删除对话失败", str(exc))
@@ -401,7 +518,10 @@ class CodexChatWindow(
             QMessageBox.information(self, "请稍候", "当前任务仍在运行，请结束后再删除项目。")
             return
         item = self.sessions.currentItem()
-        project = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if item is not None and item.parent() is not None:
+            self._delete_selected_session()
+            return
+        project = self._navigation_item_data(item) if item else None
         if not isinstance(project, dict):
             return
         name = str(project.get("name") or Path(str(project.get("workspace_path", ""))).name)
@@ -420,6 +540,7 @@ class CodexChatWindow(
         try:
             result = self.controller.projects.delete(project)
             self.chat_view.clear()
+            self._render_empty_chat()
             self._active_history_item = None
             self._refresh_workspace_label()
             self._load_project_list()
@@ -433,9 +554,19 @@ class CodexChatWindow(
     def _switch_agent_mode(self, _index: int) -> None:
         if not hasattr(self, "mode_selector"):
             return
+        if self.worker is not None and self.worker.isRunning():
+            previous_mode = self.agent_mode
+            self.mode_selector.blockSignals(True)
+            self.mode_selector.setCurrentIndex(
+                max(0, self.mode_selector.findData(previous_mode))
+            )
+            self.mode_selector.blockSignals(False)
+            self.statusBar().showMessage("当前 Agent 任务仍在运行，请完成后再切换模式")
+            return
         changed = self.controller.set_mode(self.mode_selector.currentData() or "work")
         if changed:
             self.chat_view.clear()
+            self._render_empty_chat()
             self._active_history_item = None
         self._set_mode_visibility()
         self._load_project_list()
@@ -455,9 +586,19 @@ class CodexChatWindow(
         if hasattr(self, "common_scroll"):
             self.common_scroll.setVisible(work_mode)
         if hasattr(self, "right_sidebar"):
-            self.right_sidebar.setVisible(work_mode)
+            self.right_sidebar.setVisible(work_mode and not getattr(self, "_compact_ui", False))
         if hasattr(self, "open_file_btn"):
-            self.open_file_btn.setVisible(work_mode)
+            self.open_file_btn.setVisible(work_mode and not getattr(self, "_compact_ui", False))
+        compact = bool(getattr(self, "_compact_ui", False))
+        for widget in (
+            getattr(self, "model_btn", None),
+            getattr(self, "approval_mode_label", None),
+            getattr(self, "approval_mode_selector", None),
+        ):
+            if widget is not None:
+                widget.setVisible(not compact)
+        if hasattr(self, "topbar_mode_label"):
+            self.topbar_mode_label.setText("工作模式" if work_mode else "聊天模式")
         if hasattr(self, "upload_btn"):
             # 上传文件属于当前会话，Chat 模式同样可以上传资料。
             self.upload_btn.setVisible(True)
@@ -507,16 +648,27 @@ class CodexChatWindow(
     def _mark_active_session(self, title: str) -> None:
         """把当前 session 的首个问题即时显示为会话标题。"""
         item = getattr(self, "_active_history_item", None)
-        if item is None or item.listWidget() is not self.recent_sessions:
+        if isinstance(item, QTreeWidgetItem):
+            data = self._navigation_item_data(item) or {}
+            if not data.get("session_id"):
+                self._add_current_session_entry(title)
+                item = getattr(self, "_active_history_item", None)
+                if item is None:
+                    return
+        elif item is None or item.listWidget() is not self.recent_sessions:
             self._add_current_session_entry(title)
             item = getattr(self, "_active_history_item", None)
             if item is None:
                 return
         clean_title = str(title).replace("\n", " ").strip()
         display_title = clean_title if len(clean_title) <= 42 else clean_title[:42].rstrip() + "…"
-        item.setText(display_title)
-        item.setToolTip(f"{clean_title}\n当前会话")
-        data = item.data(Qt.ItemDataRole.UserRole) or {}
+        if isinstance(item, QTreeWidgetItem):
+            item.setText(0, display_title)
+            item.setToolTip(0, f"{clean_title}\n当前会话")
+        else:
+            item.setText(display_title)
+            item.setToolTip(f"{clean_title}\n当前会话")
+        data = self._navigation_item_data(item) or {}
         data.update({
             "title": clean_title,
             "message_count": 1,
@@ -527,11 +679,16 @@ class CodexChatWindow(
             ),
             "is_unbound": getattr(self, "agent_mode", "work") != "work",
         })
-        item.setData(Qt.ItemDataRole.UserRole, data)
+        if isinstance(item, QTreeWidgetItem):
+            item.setData(0, Qt.ItemDataRole.UserRole, data)
+        else:
+            item.setData(Qt.ItemDataRole.UserRole, data)
 
     def _load_history_session(self, item: QListWidgetItem) -> None:
         """点击历史记录，恢复该用户-Agent session 的全部消息。"""
-        session = item.data(Qt.ItemDataRole.UserRole)
+        if self._workspace_switch_blocked():
+            return
+        session = self._navigation_item_data(item)
         if not isinstance(session, dict):
             return
         workspace_path = session.get("workspace_path") or None
@@ -584,28 +741,92 @@ class CodexChatWindow(
             QMessageBox.warning(self, "模型切换失败", str(exc))
 
     def _build_feature_sections(self, layout: QVBoxLayout) -> None:
+        data_titles = {"文件与数据", "文本挖掘", "机器学习"}
+        data_sections = []
+        other_sections = []
         for title, options in FEATURE_SECTIONS:
+            (data_sections if title in data_titles else other_sections).append((title, options))
+
+        if data_sections:
+            data_group = QFrame(objectName="feature_group")
+            data_group_layout = QVBoxLayout(data_group)
+            data_group_layout.setContentsMargins(10, 9, 10, 10)
+            data_group_layout.setSpacing(6)
+            data_group_layout.addWidget(QLabel("数据与分析", objectName="feature_group_title"))
+            data_group_layout.addWidget(
+                QLabel("文件、文本挖掘和机器学习任务集中在这里", objectName="feature_group_hint")
+            )
+            for title, options in data_sections:
+                self._add_feature_section(data_group_layout, title, list(options))
+            layout.addWidget(data_group)
+
+        for title, options in other_sections:
             self._add_feature_section(layout, title, list(options))
 
     def _apply_theme(self) -> None:
-        self.setStyleSheet(build_stylesheet(self.base_stylesheet, self.accent_color))
+        # 采用 GitHub 上常见的“运行时重新应用 QSS”模式，但保留本项目自有
+        # 组件样式；这里明确只接受浅色皮肤，不跟随系统切换到暗色。
+        self.effective_theme_mode = normalize_theme_mode(self.theme_mode)
+        self.setStyleSheet(
+            build_stylesheet(
+                self.base_stylesheet,
+                self.accent_color,
+                self.effective_theme_mode,
+            )
+        )
+        if hasattr(self, "auth_session"):
+            self._update_auth_status()
+        settings_window = getattr(self, "settings_window", None)
+        if settings_window is not None and settings_window.isVisible():
+            settings_window._apply_theme()
+
+    def set_theme_mode(self, mode: str) -> None:
+        """切换浅色皮肤，并立即刷新现有消息。"""
+        normalized = normalize_theme_mode(mode)
+        if normalized != self.theme_mode:
+            self.accent_color = QColor(theme_preset(normalized)["accent"])
+            self.theme_settings.setValue("accent_color", self.accent_color.name())
+        self.theme_mode = normalized
+        self.theme_settings.setValue("theme_mode", normalized)
+        self._apply_theme()
+        if getattr(self, "messages", None):
+            self._render_messages()
+        else:
+            self._render_empty_chat()
+        labels = {
+            "sage": "清新薄荷绿皮肤",
+            "sky": "清透天空蓝皮肤",
+            "lavender": "淡雅薰衣草皮肤",
+            "sand": "晨光奶油黄皮肤",
+        }
+        self.statusBar().showMessage(f"已切换到{labels[normalized]}")
 
     def reset_green_theme(self) -> None:
-        self.accent_color = QColor("#43A047")
+        self.accent_color = QColor(DEFAULT_ACCENT)
+        self.theme_mode = THEME_LIGHT
+        self.theme_settings.setValue("theme_mode", THEME_LIGHT)
         self.theme_settings.setValue("accent_color", self.accent_color.name())
         self._apply_theme()
-        self.statusBar().showMessage("已恢复绿色白色主题")
+        if getattr(self, "messages", None):
+            self._render_messages()
+        else:
+            self._render_empty_chat()
+        self.statusBar().showMessage("已恢复浅绿色主题")
 
     def customize_green_theme(self) -> None:
         from PySide6.QtWidgets import QColorDialog
 
-        color = QColorDialog.getColor(self.accent_color, self, "选择绿色主色")
+        color = QColorDialog.getColor(self.accent_color, self, "选择主题主色")
         if not color.isValid():
-            return
-        if color.green() <= color.red() or color.green() <= color.blue() or color.lightness() < 45:
-            QMessageBox.warning(self, "颜色不符合要求", "请选择明亮的绿色，不能使用黑色或非绿色颜色。")
             return
         self.accent_color = color
         self.theme_settings.setValue("accent_color", color.name())
         self._apply_theme()
+        if getattr(self, "messages", None):
+            self._render_messages()
+        else:
+            self._render_empty_chat()
         self.statusBar().showMessage(f"主题颜色已设置为 {color.name()}")
+
+    # 兼容旧版设置页和外部调用；名称保留但现在可选择任意主题主色。
+    customize_theme_color = customize_green_theme

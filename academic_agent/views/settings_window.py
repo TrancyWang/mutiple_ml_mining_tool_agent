@@ -7,14 +7,20 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -25,7 +31,12 @@ from academic_agent.infrastructure.storage_config import (
     current_storage_config,
     save_storage_config,
 )
-from academic_agent.views.styles import BASE_STYLESHEET, build_stylesheet
+from academic_agent.views.styles import (
+    BASE_STYLESHEET,
+    THEME_OPTIONS,
+    build_stylesheet,
+    theme_preset,
+)
 
 
 class SettingsWindow(QMainWindow):
@@ -57,7 +68,7 @@ class SettingsWindow(QMainWindow):
         side_layout.addWidget(QLabel("设置", objectName="settings_title"))
 
         self.nav = QListWidget(objectName="settings_nav")
-        self.nav.addItems(["常规", "模型", "外观", "账户"])
+        self.nav.addItems(["常规", "模型", "数据源", "外观", "账户"])
         self.nav.setCurrentRow(0)
         side_layout.addWidget(self.nav, 1)
         side_layout.addWidget(QLabel("Academic Agent", objectName="settings_hint"))
@@ -66,6 +77,7 @@ class SettingsWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._general_page())
         self.stack.addWidget(self._model_page())
+        self.stack.addWidget(self._mysql_page())
         self.stack.addWidget(self._appearance_page())
         self.stack.addWidget(self._account_page())
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -179,6 +191,110 @@ class SettingsWindow(QMainWindow):
         )
         return page
 
+    def _mysql_page(self) -> QWidget:
+        from academic_agent.infrastructure.mysql_datasource import (
+            MySQLProfile,
+            load_saved_mysql_profile,
+        )
+
+        saved = load_saved_mysql_profile() or MySQLProfile()
+        page, layout = self._page(
+            "数据源",
+            "配置后，Work 模式中的 Text2SQL 才能访问 MySQL。密码只保存在当前运行会话，不写入设置文件。",
+        )
+        form_group = QGroupBox("MySQL 连接")
+        form = QFormLayout(form_group)
+        self.mysql_host = QLineEdit(saved.host)
+        self.mysql_port = QSpinBox()
+        self.mysql_port.setRange(1, 65535)
+        self.mysql_port.setValue(int(saved.port))
+        self.mysql_database = QLineEdit(saved.database)
+        self.mysql_username = QLineEdit(saved.username)
+        self.mysql_password = QLineEdit()
+        self.mysql_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.mysql_password.setPlaceholderText("每次启动后重新输入")
+        self.mysql_tables = QTextEdit()
+        self.mysql_tables.setPlaceholderText("可选：每行一个授权表名；留空表示使用数据库账号可见的表")
+        self.mysql_tables.setMaximumHeight(92)
+        self.mysql_max_rows = QSpinBox()
+        self.mysql_max_rows.setRange(1, 100000)
+        self.mysql_max_rows.setValue(int(saved.max_rows))
+        self.mysql_timeout = QSpinBox()
+        self.mysql_timeout.setRange(1, 120)
+        self.mysql_timeout.setValue(int(saved.connect_timeout))
+        form.addRow("主机", self.mysql_host)
+        form.addRow("端口", self.mysql_port)
+        form.addRow("数据库", self.mysql_database)
+        form.addRow("用户名", self.mysql_username)
+        form.addRow("密码", self.mysql_password)
+        form.addRow("授权表", self.mysql_tables)
+        form.addRow("最大返回行数", self.mysql_max_rows)
+        form.addRow("连接超时（秒）", self.mysql_timeout)
+        layout.insertWidget(layout.count() - 1, form_group)
+
+        hint = QLabel(
+            "安全边界：只允许单条 SELECT；查询必须使用已配置数据库中的表；"
+            "结果会强制限制最大行数。业务指标还需要通过 TEXT2SQL_ONTOLOGY_PATH 配置目录。"
+        )
+        hint.setWordWrap(True)
+        layout.insertWidget(layout.count() - 1, hint)
+        actions = QHBoxLayout()
+        save_button = QPushButton("测试连接并保存", objectName="settings_action")
+        save_button.clicked.connect(self._save_mysql)
+        clear_button = QPushButton("清除当前连接", objectName="settings_action")
+        clear_button.clicked.connect(self._clear_mysql)
+        actions.addWidget(save_button)
+        actions.addWidget(clear_button)
+        actions.addStretch()
+        action_host = QWidget()
+        action_host.setLayout(actions)
+        layout.insertWidget(layout.count() - 1, action_host)
+        return page
+
+    def _save_mysql(self) -> None:
+        from academic_agent.infrastructure.mysql_datasource import (
+            MySQLProfile,
+            mysql_data_source,
+            save_mysql_profile,
+        )
+
+        tables = tuple(
+            item.strip()
+            for item in self.mysql_tables.toPlainText().splitlines()
+            if item.strip()
+        )
+        profile = MySQLProfile(
+            host=self.mysql_host.text().strip(),
+            port=int(self.mysql_port.value()),
+            database=self.mysql_database.text().strip(),
+            username=self.mysql_username.text().strip(),
+            allowed_tables=tables,
+            max_rows=int(self.mysql_max_rows.value()),
+            connect_timeout=int(self.mysql_timeout.value()),
+        )
+        try:
+            mysql_data_source.configure(profile, self.mysql_password.text())
+            result = mysql_data_source.test_connection()
+            if not result.get("success"):
+                raise RuntimeError(result.get("error", "连接失败"))
+            save_mysql_profile(profile)
+            schema = mysql_data_source.inspect_schema()
+            count = len(schema.get("tables", [])) if schema.get("success") else 0
+            self.main_window.statusBar().showMessage(f"MySQL 已连接；可用表 {count} 个。")
+        except Exception as exc:
+            QMessageBox.warning(self, "MySQL 配置失败", str(exc))
+
+    def _clear_mysql(self) -> None:
+        from academic_agent.infrastructure.mysql_datasource import (
+            clear_saved_mysql_profile,
+            mysql_data_source,
+        )
+
+        mysql_data_source.clear()
+        clear_saved_mysql_profile()
+        self.mysql_password.clear()
+        self.main_window.statusBar().showMessage("MySQL 数据源已清除。")
+
     def _model_page(self) -> QWidget:
         page, layout = self._page(
             "模型",
@@ -254,23 +370,37 @@ class SettingsWindow(QMainWindow):
         return page
 
     def _appearance_page(self) -> QWidget:
-        page, layout = self._page("外观", "保持白底绿字风格，可自定义绿色主色。")
+        page, layout = self._page("外观", "支持四套清新浅色皮肤，切换会立即生效，不会启用暗黑模式。")
         color = QLabel(self.main_window.accent_color.name(), objectName="settings_value")
+        self.theme_color_value = color
         layout.insertWidget(
             layout.count() - 1,
-            self._card("当前主题色", "应用当前使用的绿色主色。", color),
+            self._card("当前主题色", "应用当前皮肤使用的主色，也会影响按钮和选中状态。", color),
         )
-        theme_btn = QPushButton("选择绿色", objectName="settings_action")
+        theme_selector = QComboBox(objectName="settings_combo")
+        for label, mode in THEME_OPTIONS:
+            theme_selector.addItem(label, mode)
+        current_index = theme_selector.findData(self.main_window.theme_mode)
+        theme_selector.setCurrentIndex(max(0, current_index))
+        theme_selector.currentIndexChanged.connect(
+            lambda index: self._change_theme_mode(theme_selector.itemData(index))
+        )
+        self.theme_selector = theme_selector
+        layout.insertWidget(
+            layout.count() - 1,
+            self._card("界面皮肤", "选择薄荷绿、天空蓝、淡雅薰衣草或晨光奶油黄。", theme_selector),
+        )
+        theme_btn = QPushButton("选择主题主色", objectName="settings_action")
         theme_btn.clicked.connect(self._customize_theme)
         layout.insertWidget(
             layout.count() - 1,
-            self._card("自定义主题", "选择明亮绿色；不会启用黑色或深色主题。", theme_btn),
+            self._card("自定义主题色", "主色会同步用于按钮、选中状态和对话区强调色。", theme_btn),
         )
         reset_btn = QPushButton("恢复默认", objectName="settings_action")
         reset_btn.clicked.connect(self._reset_theme)
         layout.insertWidget(
             layout.count() - 1,
-            self._card("默认主题", "恢复 Academic Agent 默认绿色白色主题。", reset_btn),
+            self._card("默认主题", "恢复 Academic Agent 默认浅绿色主题。", reset_btn),
         )
         return page
 
@@ -336,10 +466,21 @@ class SettingsWindow(QMainWindow):
 
     def _customize_theme(self) -> None:
         self.main_window.customize_green_theme()
+        self.theme_color_value.setText(self.main_window.accent_color.name())
         self._apply_theme()
 
     def _reset_theme(self) -> None:
         self.main_window.reset_green_theme()
+        self.theme_color_value.setText(self.main_window.accent_color.name())
+        if hasattr(self, "theme_selector"):
+            index = self.theme_selector.findData(self.main_window.theme_mode)
+            self.theme_selector.blockSignals(True)
+            self.theme_selector.setCurrentIndex(max(0, index))
+            self.theme_selector.blockSignals(False)
+        self._apply_theme()
+
+    def _change_theme_mode(self, mode: object) -> None:
+        self.main_window.set_theme_mode(str(mode))
         self._apply_theme()
 
     def _switch_account(self) -> None:
@@ -347,23 +488,41 @@ class SettingsWindow(QMainWindow):
         self.close()
 
     def _apply_theme(self) -> None:
-        self.setStyleSheet(
-            build_stylesheet(BASE_STYLESHEET, self.main_window.accent_color)
-            + """
-            QFrame#settings_sidebar { background:#fbfdfb; border-right:1px solid #d7e8dc; }
-            QLabel#settings_title { color:#176b38; font-size:24px; font-weight:700; padding:16px 8px; }
-            QLabel#settings_page_title { color:#176b38; font-size:28px; font-weight:700; padding:4px 0 12px; }
-            QLabel#settings_page_subtitle, QLabel#settings_hint { color:#6b8c75; font-size:14px; }
-            QLabel#settings_section_title { color:#245c36; font-size:17px; font-weight:700; padding-top:12px; }
-            QListWidget#settings_nav { background:transparent; color:#245c36; font-size:15px; }
+        settings_styles = """
+            QFrame#settings_sidebar { background:#fbfdfb; border-right:1px solid #e0eee3; }
+            QLabel#settings_title { color:#52745b; font-size:24px; font-weight:700; padding:16px 8px; }
+            QLabel#settings_page_title { color:#52745b; font-size:28px; font-weight:700; padding:4px 0 12px; }
+            QLabel#settings_page_subtitle, QLabel#settings_hint { color:#789783; font-size:14px; }
+            QLabel#settings_section_title { color:#52745b; font-size:17px; font-weight:700; padding-top:12px; }
+            QListWidget#settings_nav { background:transparent; color:#52745b; font-size:15px; }
             QListWidget#settings_nav::item { padding:12px 14px; margin:2px 0; border-radius:11px; }
-            QListWidget#settings_nav::item:selected { background:#e8f5e9; color:#176b38; font-weight:600; }
-            QFrame#settings_card { background:#ffffff; border:1px solid #d7e8dc; border-radius:16px; }
-            QLabel#settings_card_title { color:#245c36; font-size:15px; font-weight:700; }
+            QListWidget#settings_nav::item:selected { background:#eef9f1; color:#52745b; font-weight:600; }
+            QFrame#settings_card { background:#ffffff; border:1px solid #e0eee3; border-radius:16px; }
+            QLabel#settings_card_title { color:#52745b; font-size:15px; font-weight:700; }
             QLabel#settings_card_description { color:#718a78; font-size:14px; }
-            QLabel#settings_value { color:#245c36; font-size:13px; padding:8px; }
+            QLabel#settings_value { color:#52745b; font-size:13px; padding:8px; }
             QComboBox#settings_combo { min-width:190px; }
-            QCheckBox#settings_checkbox { color:#245c36; padding:8px; }
+            QCheckBox#settings_checkbox { color:#52745b; padding:8px; }
             QPushButton#settings_back, QPushButton#settings_action { padding:9px 16px; border-radius:12px; }
             """
+        if self.main_window.effective_theme_mode != "sage":
+            preset = theme_preset(self.main_window.effective_theme_mode)
+            settings_styles += f"""
+            QFrame#settings_sidebar {{ background:{preset['sidebar']}; border-color:{preset['divider']}; }}
+            QLabel#settings_title, QLabel#settings_page_title,
+            QLabel#settings_section_title, QLabel#settings_value,
+            QListWidget#settings_nav, QLabel#settings_card_title {{ color:{preset['primary']}; }}
+            QLabel#settings_page_subtitle, QLabel#settings_hint,
+            QLabel#settings_card_description {{ color:{preset['secondary']}; }}
+            QListWidget#settings_nav::item:selected {{ background:{preset['selection']}; color:{preset['primary']}; }}
+            QFrame#settings_card {{ background:{preset['surface']}; border-color:{preset['border']}; }}
+            QCheckBox#settings_checkbox {{ color:{preset['primary']}; }}
+            """
+        self.setStyleSheet(
+            build_stylesheet(
+                BASE_STYLESHEET,
+                self.main_window.accent_color,
+                self.main_window.effective_theme_mode,
+            )
+            + settings_styles
         )

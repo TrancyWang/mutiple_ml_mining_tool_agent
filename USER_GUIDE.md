@@ -290,24 +290,26 @@ SENTIMENT_MODEL_PATH=D:/models/pretrain_models/xuyuan-trial-sentiment-bert-chine
 
 ### 4.5 外部文本算法源项目
 
-部分文本能力还复用了外部项目 `video_text_mutiplemodal_agent`，包括文本预处理、BGE 聚类、中文 BERT 情感分析和部分 KeyBERT 流程。推荐目录关系：
+部分文本能力还复用了新版 `text_mining_tools_agent_client_cpu` 外部文本算法源项目，包括文本预处理、BGE 聚类、中文 BERT 情感分析和部分 KeyBERT 流程。新版根目录包含 `src_code/`，并提供多种聚类算法、分批推理和进度日志。目录关系：
 
 ```text
 parent/
 ├── mutiple_ml_mining_tool_agent/
-└── video_text_mutiplemodal_agent/
-    ├── src_codes/
+└── text_mining_tools_agent_client_cpu/
+    ├── src_code/
     └── pretrain_models/
 ```
 
 如果源项目不在默认的同级目录，需要在 `.env` 中配置：
 
 ```dotenv
-VIDEO_AGENT_SOURCE_ROOT=/absolute/path/to/video_text_mutiplemodal_agent
+TEXT_MINING_SOURCE_ROOT=/absolute/path/to/text_mining_tools_agent_client_cpu
 PRETRAINED_MODELS_DIR=/absolute/path/to/pretrain_models
 ```
 
-`VIDEO_AGENT_SOURCE_ROOT` 必须指向源项目根目录，不能直接指向 `src_codes` 或其中的某个子目录。
+`TEXT_MINING_SOURCE_ROOT` 必须指向源项目根目录，不能直接指向 `src_code` 或其中的某个子目录。
+
+使用新版 CPU 文本挖掘项目时，将该变量指向 `text_mining_tools_agent_client_cpu` 根目录即可；不要指向它的 `src_code` 子目录。
 
 ## 5. 完成第一次分析
 
@@ -350,6 +352,8 @@ PRETRAINED_MODELS_DIR=/absolute/path/to/pretrain_models
 - `帮我批准`：Agent 自动完成这些确认节点，适合已经熟悉流程的重复任务。
 
 无论选择哪种方式，涉及工作区文件生成、编辑和删除的操作仍应检查预览和确认提示。不要对不了解的删除操作直接确认。
+
+如果程序在 Work 任务执行中退出，重新登录后会提示发现未完成任务。选择继续后，已完成的任务会跳过，运行中的任务会从最近一次检查点重新执行；已经落盘且参数一致的成功工具结果会优先复用。涉及文件写入确认的操作仍需再次检查预览。
 
 ### 5.4 查看结果
 
@@ -403,11 +407,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-macOS spec 默认需要找到外部项目 `video_text_mutiplemodal_agent` 中的：
+macOS spec 默认需要找到新版外部项目中的：
 
 ```text
-video_text_mutiplemodal_agent/
-└── src_codes/main_process_agent/text_processor_subagent_stage_3/
+text_mining_tools_agent_client_cpu/
+└── src_code/
 ```
 
 如果它位于当前项目的同级目录，可以直接执行：
@@ -420,7 +424,7 @@ PYTHON_BIN="$PWD/.venv/bin/python" bash scripts/build_macos.sh
 
 ```bash
 PYTHON_BIN="$PWD/.venv/bin/python" \
-VIDEO_AGENT_SOURCE_ROOT=/absolute/path/to/video_text_mutiplemodal_agent \
+TEXT_MINING_SOURCE_ROOT=/absolute/path/to/text_mining_tools_agent_client_cpu \
 bash scripts/build_macos.sh
 ```
 
@@ -462,7 +466,7 @@ find dist -name .env -print
 ```bash
 INCLUDE_LOCAL_MODELS=1 \
 PYTHON_BIN="$PWD/.venv/bin/python" \
-VIDEO_AGENT_SOURCE_ROOT=/absolute/path/to/video_text_mutiplemodal_agent \
+TEXT_MINING_SOURCE_ROOT=/absolute/path/to/text_mining_tools_agent_client_cpu \
 bash scripts/build_macos.sh
 ```
 
@@ -516,7 +520,7 @@ dist/AcademicAgent-windows.zip
 - BERT/BGE 本地模型目录；
 - 外部文本算法源项目（如果使用相关文本能力）。
 
-Windows spec 默认不把外部 `video_text_mutiplemodal_agent` 和本地模型权重打进安装包，因此只下载 Windows 压缩包并不等于已经准备好全部文本算法依赖。
+Windows spec 默认不把外部 `text_mining_tools_agent_client_cpu` 和本地模型权重打进安装包，因此只下载 Windows 压缩包并不等于已经准备好全部文本算法依赖。
 
 ### 6.4 GitHub Actions 自动构建
 
@@ -592,6 +596,15 @@ Workflow 使用 Windows Runner、Python 3.10 和统一 `requirements.txt`，最�
 ```
 
 或者在“设置 → 模型 → 中文八分类情绪模型”中直接选择具体模型目录。该目录至少应包含 `config.json`。
+
+### MySQL Text2SQL
+
+进入“设置 → 数据源”，配置 MySQL 主机、端口、数据库、用户名和密码；密码只在
+当前运行会话中保存。建议使用只读数据库账号，并按需填写授权表名和最大返回行数。
+
+要启用业务口径约束，还需要设置 TEXT2SQL_ONTOLOGY_PATH，指向一个业务指标目录
+JSON。Agent 会先读取当前 Schema 和指标目录，再把自然语言转换为受限
+semantic_query；未知指标、歧义口径和越权表会直接拒绝，不会自行猜测。
 
 ### Ollama 连接失败
 

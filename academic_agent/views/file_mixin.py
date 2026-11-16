@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from academic_agent.infrastructure.workspace_manager import workspace_manager
+from academic_agent.views.file_tree_worker import FileTreeWorker
 
 
 class FilePanelMixin:
@@ -46,13 +47,19 @@ class FilePanelMixin:
         panel_layout.addWidget(self.workspace_path_label)
         self.file_filter = QLineEdit(objectName="file_filter")
         self.file_filter.setPlaceholderText("筛选文件…")
-        self.file_filter.textChanged.connect(self._refresh_file_tree)
+        self.file_filter.textChanged.connect(self._schedule_file_tree_refresh)
         panel_layout.addWidget(self.file_filter)
 
         self.file_tree = QTreeWidget(objectName="file_tree")
         self.file_tree.setHeaderHidden(True)
         panel_layout.addWidget(self.file_tree, 2)
         self._file_tree_last_refresh = 0.0
+        self._file_tree_generation = 0
+        self._file_tree_workers: set[FileTreeWorker] = set()
+        self._file_tree_refresh_pending = False
+        self._file_tree_refresh_timer = QTimer(self)
+        self._file_tree_refresh_timer.setSingleShot(True)
+        self._file_tree_refresh_timer.timeout.connect(self._refresh_file_tree)
         self._refresh_file_tree()
         return panel
 
@@ -72,10 +79,49 @@ class FilePanelMixin:
     def _refresh_file_tree(self) -> None:
         if not hasattr(self, "file_tree"):
             return
+        root = workspace_manager.root.resolve()
+        for worker in self._file_tree_workers:
+            if worker.isRunning() and worker.root == root:
+                self._file_tree_refresh_pending = True
+                return
+        self._file_tree_generation += 1
+        generation = self._file_tree_generation
+        worker = FileTreeWorker(root)
+        self._file_tree_workers.add(worker)
+        worker.files_ready.connect(
+            lambda scanned_root, files, generation=generation: self._apply_file_tree(
+                generation, scanned_root, files
+            )
+        )
+        worker.failed.connect(
+            lambda scanned_root, message, generation=generation: self._file_tree_scan_failed(
+                generation, scanned_root, message
+            )
+        )
+        worker.finished.connect(lambda worker=worker: self._file_tree_worker_finished(worker))
+        worker.start()
+
+    def _schedule_file_tree_refresh(self) -> None:
+        if hasattr(self, "_file_tree_refresh_timer"):
+            self._file_tree_refresh_timer.start(120)
+        else:
+            self._refresh_file_tree()
+
+    def _file_tree_worker_finished(self, worker: FileTreeWorker) -> None:
+        self._file_tree_workers.discard(worker)
+        worker.deleteLater()
+        if self._file_tree_refresh_pending:
+            self._file_tree_refresh_pending = False
+            self._schedule_file_tree_refresh()
+
+    def _apply_file_tree(self, generation: int, scanned_root: str, files: object) -> None:
+        current_root = str(workspace_manager.root.resolve())
+        if generation != self._file_tree_generation or scanned_root != current_root:
+            return
         query = self.file_filter.text().strip().lower()
         self.file_tree.clear()
         nodes: dict[str, QTreeWidgetItem] = {}
-        for relative in workspace_manager.list_files():
+        for relative in files if isinstance(files, list) else []:
             if query and query not in relative.lower():
                 continue
             parent = self.file_tree.invisibleRootItem()
@@ -92,6 +138,12 @@ class FilePanelMixin:
                     item.setData(0, Qt.ItemDataRole.UserRole, relative)
         self.file_tree.expandToDepth(0)
         self._file_tree_last_refresh = time.monotonic()
+
+    def _file_tree_scan_failed(self, generation: int, scanned_root: str, message: str) -> None:
+        if generation != self._file_tree_generation:
+            return
+        if scanned_root == str(workspace_manager.root.resolve()):
+            self.statusBar().showMessage(f"文件树刷新失败：{message}")
 
     def _refresh_open_file_panel(self) -> None:
         """定时同步工作区文件树，并刷新当前打开文件的内容。"""

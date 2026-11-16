@@ -17,7 +17,9 @@ class FeaturePanelMixin:
     ) -> None:
         layout.addWidget(QLabel(title, objectName="section_title"))
         combo = QComboBox(objectName="feature_select")
-        combo.addItem(title)
+        combo.addItem("选择一项任务…")
+        combo.setProperty("feature_section", title)
+        combo.setToolTip(f"从“{title}”中选择一个常用任务，选中后会填入输入框")
         for label, prompt in options:
             combo.addItem(label, prompt)
         combo.currentIndexChanged.connect(
@@ -40,9 +42,6 @@ class FeaturePanelMixin:
         if prompt == "__SHOW_IMAGE__":
             combo.setCurrentIndex(0)
             self.show_image_file()
-            return
-        if combo.itemText(0) == "文本挖掘" and not self._ensure_text_mining_model():
-            combo.setCurrentIndex(0)
             return
         if prompt:
             self.composer.setPlainText(str(prompt))

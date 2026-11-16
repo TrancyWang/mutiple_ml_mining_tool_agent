@@ -5,19 +5,27 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+import json
 import time
 from typing import Any, Iterator
 
 from academic_agent.agent.policies.tool_access import AgentPolicy, PolicyViolation
 from academic_agent.agent.types import ExecutionScope
+from academic_agent.agent.specialists.catalog import REPAIR_TOOLS
 from academic_agent.agent.tooling.builtins import execute_tool
 from academic_agent.agent.session import session_store
 from academic_agent.agent.tooling.registry import ToolRegistry, tool_registry
+from academic_agent.harness.contracts import HarnessBudgetExceeded
 
 
 _CURRENT_SCOPE: ContextVar[ExecutionScope | None] = ContextVar(
     "academic_agent_execution_scope", default=None
 )
+
+
+def current_execution_scope() -> ExecutionScope | None:
+    """供模型适配层读取当前 Agent 及其受限工具集合。"""
+    return _CURRENT_SCOPE.get()
 
 
 def emit_tool_log(tool: str, message: str, level: str = "info") -> None:
@@ -31,6 +39,7 @@ _ANALYSIS_TOOLS = {
     "feature_processing", "sentiment_analysis", "text_clustering", "extract_keywords",
     "entity_recognition", "relation_extraction",
     "regression", "classification", "causal_inference", "document_rag",
+    "text2sql_context", "text2sql_execute",
 }
 
 
@@ -44,7 +53,8 @@ def _analysis_input_log(name: str, params: dict[str, Any]) -> str:
         rows, columns = text_mining_tools.current_data.shape
         parts.append(f"数据={rows} 行 × {columns} 列")
     for key in (
-        "text_column", "algorithm", "n_clusters", "eps", "min_samples", "top_n",
+        "text_column", "algorithm", "n_clusters", "eps", "min_samples", "linkage",
+        "covariance_type", "damping", "bandwidth", "max_iter", "top_n",
         "target_var", "feature_vars", "model_type", "method", "test_size",
         "multiple_folds", "treatment_var", "outcome_var", "batch_size", "max_texts",
     ):
@@ -94,12 +104,47 @@ class ToolExecutor:
         if spec is None:
             return {"success": False, "error": f"未知工具：{name}"}
         try:
+            if scope:
+                plan_allowed = set(scope.plan.available_tools)
+                if scope.current_agent_id == "text_mining":
+                    plan_allowed.update(
+                        repair for repair, source in REPAIR_TOOLS.items() if source in plan_allowed
+                    )
+                if name not in plan_allowed:
+                    reason = f"当前 Plan 不允许调用工具：{name}"
+                    scope.record("tool_denied", tool=name, label=spec.label, reason=reason)
+                    return {"success": False, "tool": name, "error": reason, "denied": True}
             if scope and scope.allowed_tools is not None and name not in scope.allowed_tools:
                 reason = f"当前任务不允许调用工具：{name}"
                 scope.record("tool_denied", tool=name, label=spec.label, reason=reason)
                 return {"success": False, "tool": name, "error": reason, "denied": True}
             self.policy.authorize(spec, params, scope)
+            if scope and scope.budget_guard is not None:
+                scope.budget_guard("tool")
             context = session_store.get(scope.request.session_id) if scope else None
+            if scope and scope.recovery_mode:
+                observation_key = scope.current_task_id or "__unscoped__"
+                for observation in reversed(scope.task_observations.get(observation_key, [])):
+                    if str(observation.get("tool") or "") != str(name):
+                        continue
+                    try:
+                        same_params = json.dumps(
+                            observation.get("params", {}),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        ) == json.dumps(
+                            params,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            default=str,
+                        )
+                    except (TypeError, ValueError):
+                        same_params = observation.get("params", {}) == params
+                    cached = observation.get("result")
+                    if same_params and isinstance(cached, dict) and cached.get("success") and not cached.get("requires_confirmation"):
+                        scope.record("tool_result_reused", tool=name, label=spec.label)
+                        return cached
             started_at = time.monotonic()
             if scope:
                 scope.record("tool_started", tool=name, label=spec.label)
@@ -113,8 +158,11 @@ class ToolExecutor:
                 observation_key = scope.current_task_id or "__unscoped__"
                 scope.task_observations.setdefault(observation_key, []).append({
                     "tool": name,
+                    "params": dict(params),
                     "result": result,
                 })
+                if scope.checkpoint_callback is not None:
+                    scope.checkpoint_callback()
                 if name in _ANALYSIS_TOOLS:
                     for message in _analysis_result_logs(result, time.monotonic() - started_at):
                         scope.record(
@@ -134,6 +182,8 @@ class ToolExecutor:
             if scope:
                 scope.record("tool_denied", tool=name, label=spec.label, reason=str(exc))
             return {"success": False, "tool": name, "error": str(exc), "denied": True}
+        except HarnessBudgetExceeded:
+            raise
         except Exception as exc:
             if scope:
                 if name in _ANALYSIS_TOOLS:

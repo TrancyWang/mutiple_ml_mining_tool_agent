@@ -36,6 +36,21 @@ def test_write_project_file_rejects_protected_files(tmp_path, monkeypatch):
         project.write_project_file(path=".env", content="TOKEN=secret")
 
 
+def test_workspace_file_listing_prunes_ignored_directories(tmp_path):
+    (tmp_path / ".git" / "objects").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib").mkdir(parents=True)
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / ".git" / "objects" / "ignored.txt").write_text("x", encoding="utf-8")
+    (tmp_path / ".venv" / "lib" / "ignored.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "__pycache__" / "ignored.pyc").write_bytes(b"x")
+    (tmp_path / "src" / "main.py").write_text("print('ok')", encoding="utf-8")
+
+    files = WorkspaceManager(tmp_path).list_files()
+
+    assert files == ["src/main.py"]
+
+
 def test_code_request_routes_to_workspace_and_exposes_write_tool():
     request = AgentRequest(
         messages=[{"role": "user", "content": "请在工作区写代码"}],

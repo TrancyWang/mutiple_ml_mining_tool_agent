@@ -9,7 +9,6 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +26,13 @@ from academic_agent.infrastructure.runtime_paths import is_frozen, resource_root
 
 
 def _default_source_root() -> Path:
-    configured = os.getenv("VIDEO_AGENT_SOURCE_ROOT", "").strip()
+    configured = os.getenv("TEXT_MINING_SOURCE_ROOT", "").strip()
     if configured and Path(configured).is_dir():
         return Path(configured).resolve()
+    sibling_root = resource_root().parent
     if is_frozen():
-        return (resource_root() / "video_text_mutiplemodal_agent").resolve()
-    return (resource_root().parent / "video_text_mutiplemodal_agent").resolve()
+        return (resource_root() / "text_mining_tools_agent_client_cpu").resolve()
+    return (sibling_root / "text_mining_tools_agent_client_cpu").resolve()
 
 
 class SourceVideoTextAdapter:
@@ -40,31 +40,41 @@ class SourceVideoTextAdapter:
 
     def __init__(self, source_root: Path | None = None) -> None:
         self.source_root = Path(source_root or _default_source_root()).resolve()
-        self.model_root: Path | None = normalize_model_root(os.getenv("PRETRAINED_MODELS_DIR"))
+        configured_model_root = normalize_model_root(os.getenv("PRETRAINED_MODELS_DIR"))
+        source_model_root = self.source_root / "pretrain_models"
+        self.model_root: Path | None = configured_model_root or (
+            source_model_root.resolve() if source_model_root.is_dir() else None
+        )
         self.sentiment_model_path: Path | None = self._optional_path("SENTIMENT_MODEL_PATH")
         self.custom_dictionary_path: Path | None = self._optional_path("CUSTOM_DICTIONARY_PATH")
-        self._general_model_path: Path | None = None
-        self._general_tokenizer: Any | None = None
-        self._general_model: Any | None = None
 
     @staticmethod
     def _optional_path(name: str) -> Path | None:
         value = os.getenv(name, "").strip()
         return Path(value).expanduser().resolve() if value else None
 
+    @staticmethod
+    def _runtime_log(tool: str, message: str) -> None:
+        """Forward optional source-model progress into the active Agent run."""
+
+        try:
+            from academic_agent.agent.executor import emit_tool_log
+            emit_tool_log(tool, message)
+        except Exception:
+            # Progress reporting must never make a model call fail, especially
+            # when the adapter is used directly from a script or test.
+            return
+
     def set_model_root(self, model_root: str | Path) -> None:
         self.model_root = normalize_model_root(model_root)
         apply_model_root(self.model_root)
-        self._general_model_path = None
-        self._general_tokenizer = None
-        self._general_model = None
+        if self.model_root is not None:
+            os.environ["TEXT_MINING_MODEL_DIR"] = str(self.model_root)
 
     def reset_model_root(self) -> None:
         self.model_root = None
         apply_model_root(None)
-        self._general_model_path = None
-        self._general_tokenizer = None
-        self._general_model = None
+        os.environ.pop("TEXT_MINING_MODEL_DIR", None)
 
     def set_sentiment_model_path(self, model_path: str | Path) -> None:
         path = Path(model_path).expanduser().resolve()
@@ -102,13 +112,31 @@ class SourceVideoTextAdapter:
         # system cache during local execution.
         os.environ.setdefault("NUMBA_DISABLE_CACHING", "1")
         os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
-        src_root = self.source_root / "src_codes"
-        main_root = src_root / "main_process_agent"
-        for path in (src_root, main_root):
+        package_root = self.source_root / "src_code"
+        for path in (self.source_root, package_root):
             if path.is_dir() and str(path) not in sys.path:
                 sys.path.insert(0, str(path))
         model_dir = self.model_root or default_model_root()
         os.environ.setdefault("PRETRAINED_MODELS_DIR", str(model_dir))
+        # The reference CPU client resolves models through this variable.
+        # Setting it only when absent preserves an explicitly configured
+        # source-project value.
+        os.environ.setdefault("TEXT_MINING_MODEL_DIR", str(model_dir))
+
+    def _source_module(self, component: str) -> str:
+        """Resolve a component from the polished CPU source project."""
+
+        modules = {
+            "preprocess": "src_code.preprocessing.data_preprocess",
+            "embedding": "src_code.text_mining.embeddings_models.textEmbedding",
+            "sentiment": "src_code.text_mining.sentiment.chinese_sentiment_bert_analysis",
+            "general_sentiment": "src_code.text_mining.sentiment.sentiment_general_analysis",
+            "keywords": "src_code.text_mining.keyword_extractor.textKeyBert_cluster_sentence_fuse_pro",
+        }
+        try:
+            return modules[component]
+        except KeyError as exc:
+            raise ValueError(f"未知源项目组件：{component}") from exc
 
     @staticmethod
     def _prepare_embeddings(values: Any, expected_rows: int) -> np.ndarray:
@@ -154,6 +182,27 @@ class SourceVideoTextAdapter:
         with threadpool_limits(limits=1):
             return model.fit_predict(embeddings)
 
+    @staticmethod
+    def _normalize_cluster_algorithm(algorithm: str | None) -> str:
+        value = str(algorithm or "kmeans").strip().lower()
+        aliases = {
+            "k-means": "kmeans",
+            "k均值": "kmeans",
+            "minibatch": "minibatch_kmeans",
+            "mini_batch_kmeans": "minibatch_kmeans",
+            "hierarchical": "agglomerative",
+            "层次聚类": "agglomerative",
+            "gaussian_mixture": "gmm",
+            "gaussian mixture": "gmm",
+            "高斯混合": "gmm",
+            "谱聚类": "spectral",
+            "亲和传播": "affinity_propagation",
+            "affinity": "affinity_propagation",
+            "mean_shift": "meanshift",
+            "均值漂移": "meanshift",
+        }
+        return aliases.get(value, value)
+
     def _clustering_in_process(
         self,
         data: pd.DataFrame,
@@ -163,6 +212,11 @@ class SourceVideoTextAdapter:
         eps: float,
         min_samples: int,
         output_file: str | None,
+        linkage: str = "ward",
+        covariance_type: str = "full",
+        damping: float = 0.5,
+        bandwidth: float | None = None,
+        max_iter: int = 300,
     ) -> pd.DataFrame:
         """Perform clustering without entering the source KMeans loop.
 
@@ -180,19 +234,29 @@ class SourceVideoTextAdapter:
         # Import only the source embedding component. The source clustering
         # module eagerly constructs a second global model and then enters its
         # own KMeans implementation; both are unnecessary for this adapter.
-        embedding_module = self._load(
-            "text_processor_subagent_stage_3.common.textEmbedding"
+        embedding_module = self._load(self._source_module("embedding"))
+        embedder = embedding_module.TextEmbedding(
+            log_callback=lambda message: self._runtime_log(
+                "text_clustering", str(message)
+            ),
+            progress_callback=lambda value: self._runtime_log(
+                "text_clustering", f"模型加载/向量提取进度：{value}%"
+            ),
         )
-        embedder = getattr(embedding_module, "txt", None)
-        if embedder is None:
-            embedder = embedding_module.TextEmbedding()
         texts = work[text_column].astype(str).tolist()
-        embeddings = embedder.get_query_vector(texts)
+        try:
+            embeddings = embedder.get_query_vector(texts, batch_size=64)
+        except TypeError:
+            embeddings = embedder.get_query_vector(texts)
         if embeddings is None:
             raise RuntimeError("文本向量生成失败，无法进行聚类")
         embeddings = self._prepare_embeddings(embeddings, len(work))
 
-        if algorithm in {"kmeans", "agglomerative"}:
+        algorithm = self._normalize_cluster_algorithm(algorithm)
+        requires_clusters = {
+            "kmeans", "minibatch_kmeans", "agglomerative", "gmm", "spectral", "birch"
+        }
+        if algorithm in requires_clusters:
             n_clusters = int(n_clusters)
             if n_clusters < 2:
                 raise ValueError("聚类数至少为 2")
@@ -206,16 +270,68 @@ class SourceVideoTextAdapter:
                 n_clusters=int(n_clusters),
                 init="k-means++",
                 n_init=10,
-                max_iter=300,
+                max_iter=int(max_iter),
                 random_state=42,
+            )
+        elif algorithm == "minibatch_kmeans":
+            from sklearn.cluster import MiniBatchKMeans
+
+            model = MiniBatchKMeans(
+                n_clusters=int(n_clusters),
+                max_iter=int(max_iter),
+                random_state=42,
+                n_init=3,
             )
         elif algorithm == "agglomerative":
             from sklearn.cluster import AgglomerativeClustering
 
-            model = AgglomerativeClustering(n_clusters=int(n_clusters))
+            if linkage == "ward" and not np.issubdtype(embeddings.dtype, np.number):
+                linkage = "average"
+            model = AgglomerativeClustering(
+                n_clusters=int(n_clusters), linkage=str(linkage)
+            )
+        elif algorithm == "gmm":
+            from sklearn.mixture import GaussianMixture
+
+            model = GaussianMixture(
+                n_components=int(n_clusters),
+                covariance_type=str(covariance_type),
+                max_iter=int(max_iter),
+                random_state=42,
+            )
+        elif algorithm == "spectral":
+            from sklearn.cluster import SpectralClustering
+
+            neighbors = min(10, max(2, len(work) - 1)) if len(work) > 2 else None
+            params = {
+                "n_clusters": int(n_clusters),
+                "random_state": 42,
+                "n_init": 10,
+            }
+            if neighbors is not None:
+                params.update({"affinity": "nearest_neighbors", "n_neighbors": neighbors})
+            else:
+                params["affinity"] = "rbf"
+            model = SpectralClustering(**params)
+        elif algorithm == "birch":
+            from sklearn.cluster import Birch
+
+            model = Birch(n_clusters=int(n_clusters))
+        elif algorithm == "affinity_propagation":
+            from sklearn.cluster import AffinityPropagation
+
+            model = AffinityPropagation(
+                damping=float(damping), max_iter=int(max_iter), random_state=42
+            )
+        elif algorithm == "meanshift":
+            from sklearn.cluster import MeanShift
+
+            model = MeanShift(bandwidth=bandwidth)
         else:
             from sklearn.cluster import DBSCAN
 
+            if algorithm != "dbscan":
+                raise ValueError(f"不支持的聚类算法：{algorithm}")
             model = DBSCAN(eps=float(eps), min_samples=int(min_samples), n_jobs=1)
 
         labels = self._fit_cluster_labels(model, embeddings)
@@ -282,28 +398,15 @@ class SourceVideoTextAdapter:
         if not self.source_root.is_dir():
             raise FileNotFoundError(f"源项目不存在：{self.source_root}")
         self._prepare_imports()
-        if module_name.endswith(".clustering") and "umap" not in sys.modules:
-            # The source clusterer imports UMAP unconditionally, although the
-            # standard path below does not reduce dimensions. Keep the source
-            # implementation intact while avoiding an optional numba cache
-            # write during normal clustering.
-            umap_stub = types.ModuleType("umap")
-            umap_stub.UMAP = type(
-                "UMAP",
-                (),
-                {"__init__": lambda self, *args, **kwargs: None,
-                 "fit_transform": lambda self, values: values},
-            )
-            sys.modules["umap"] = umap_stub
         return importlib.import_module(module_name)
 
     def preprocess(self, texts: list[str]) -> list[str]:
-        module = self._load("text_processor_subagent_stage_3.common.data_preprocess")
+        module = self._load(self._source_module("preprocess"))
         processor = module.Data_PreProcessor()
         return processor.preprocess_data([str(text) for text in texts])
 
     def sentiment(self, texts: list[str], top_k: int = 1, batch_size: int = 8) -> list[dict[str, Any]]:
-        module = self._load("text_processor_subagent_stage_3.sentiment.chinese_sentiment_bert_analysis")
+        module = self._load(self._source_module("sentiment"))
         # 源实现保留不动；这里仅在适配层替换其已加载模型，支持用户选择独立模型目录。
         if self.sentiment_model_path:
             transformers = __import__("transformers", fromlist=["AutoTokenizer", "AutoModelForSequenceClassification"])
@@ -315,100 +418,31 @@ class SourceVideoTextAdapter:
             ).to(module.device).eval()
             module.id2label = module.model.config.id2label
             module.label2id = module.model.config.label2id
-        return module.predict_emotion([str(text) for text in texts], top_k=top_k, batch_size=batch_size)
-
-    def _load_general_sentiment_model(self) -> tuple[Any, Any, dict[int, str]]:
-        """Load the general model from the configured model-library root.
-
-        The source implementation builds its path relative to its own source
-        file, which is not reliable after PyInstaller packaging. The client
-        already has a model-library setting, so resolve this model through the
-        same setting instead.
-        """
-
-        model_root = self.model_root or default_model_root()
-        model_path = model_root / "multilingual-sentiment-analysis"
-        if not model_path.is_dir():
-            raise FileNotFoundError(
-                "通用五分类情感模型目录不存在："
-                f"{model_path}\n"
-                "请在“文本挖掘模型库根目录”中选择包含 "
-                "multilingual-sentiment-analysis 子目录的 pretrain_models 文件夹。"
-            )
-
-        if (
-            self._general_model_path == model_path
-            and self._general_tokenizer is not None
-            and self._general_model is not None
-        ):
-            return (
-                self._general_tokenizer,
-                self._general_model,
-                {
-                    0: "Very Negative",
-                    1: "Negative",
-                    2: "Neutral",
-                    3: "Positive",
-                    4: "Very Positive",
-                },
-            )
-
-        self._prepare_imports()
-        transformers = __import__(
-            "transformers",
-            fromlist=["AutoTokenizer", "AutoModelForSequenceClassification"],
+        kwargs = {"top_k": top_k, "batch_size": batch_size}
+        kwargs["progress_callback"] = lambda message: self._runtime_log(
+            "sentiment_analysis", str(message)
         )
-        tokenizer = transformers.AutoTokenizer.from_pretrained(
-            str(model_path), local_files_only=True
-        )
-        model = transformers.AutoModelForSequenceClassification.from_pretrained(
-            str(model_path), local_files_only=True
-        )
-        model.eval()
-        self._general_model_path = model_path
-        self._general_tokenizer = tokenizer
-        self._general_model = model
-        return (
-            tokenizer,
-            model,
-            {
-                0: "Very Negative",
-                1: "Negative",
-                2: "Neutral",
-                3: "Positive",
-                4: "Very Positive",
-            },
-        )
+        return module.predict_emotion([str(text) for text in texts], **kwargs)
 
     def general_sentiment(self, texts: list[str]) -> list[dict[str, Any]]:
-        tokenizer, model, sentiment_map = self._load_general_sentiment_model()
-        import torch
-
-        normalized_texts = [str(text) for text in texts]
-        rows: list[dict[str, Any]] = []
-        batch_size = 16
-        for start in range(0, len(normalized_texts), batch_size):
-            batch_texts = normalized_texts[start:start + batch_size]
-            inputs = tokenizer(
-                batch_texts,
-                return_tensors="pt",
-                truncation=True,
-                padding=True,
-                max_length=512,
-            )
-            with torch.no_grad():
-                outputs = model(**inputs)
-            probabilities = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            predictions = torch.argmax(probabilities, dim=1).cpu().tolist()
-            for index, predicted_index in enumerate(predictions):
-                rows.append({
-                    "text": batch_texts[index],
-                    "sentiment": sentiment_map[int(predicted_index)],
-                    "probability": float(
-                        probabilities[index][int(predicted_index)].item()
-                    ),
-                })
-        return rows
+        module = self._load(self._source_module("general_sentiment"))
+        results = module.predict_sentiment(
+            [str(text) for text in texts],
+            batch_size=16,
+            progress_callback=lambda message: self._runtime_log(
+                "sentiment_analysis", str(message)
+            ),
+        )
+        if not isinstance(results, list):
+            raise RuntimeError("新版通用情感分析模块返回结果格式异常")
+        return [
+            {
+                "text": item.get("text", ""),
+                "sentiment": item.get("predicted_sentiment", "Neutral"),
+                "probability": float(item.get("probability", 0.0)),
+            }
+            for item in results
+        ]
 
     def clustering(
         self,
@@ -418,11 +452,22 @@ class SourceVideoTextAdapter:
         algorithm: str = "kmeans",
         eps: float = 0.5,
         min_samples: int = 5,
+        linkage: str = "ward",
+        covariance_type: str = "full",
+        damping: float = 0.5,
+        bandwidth: float | None = None,
+        max_iter: int = 300,
         output_file: str | None = None,
     ) -> pd.DataFrame:
-        algorithm = str(algorithm or "kmeans").lower()
-        if algorithm not in {"kmeans", "agglomerative", "dbscan"}:
-            raise ValueError("聚类算法仅支持 kmeans、agglomerative 或 dbscan")
+        algorithm = self._normalize_cluster_algorithm(algorithm)
+        supported = {
+            "kmeans", "minibatch_kmeans", "dbscan", "agglomerative", "gmm",
+            "spectral", "birch", "affinity_propagation", "meanshift",
+        }
+        if algorithm not in supported:
+            raise ValueError(
+                "聚类算法仅支持：" + "、".join(sorted(supported))
+            )
         kwargs = {
             "data": data.copy(),
             "text_column": text_column,
@@ -430,6 +475,11 @@ class SourceVideoTextAdapter:
             "algorithm": algorithm,
             "eps": float(eps),
             "min_samples": int(min_samples),
+            "linkage": str(linkage),
+            "covariance_type": str(covariance_type),
+            "damping": float(damping),
+            "bandwidth": None if bandwidth in (None, "") else float(bandwidth),
+            "max_iter": int(max_iter),
             "output_file": output_file,
         }
         if os.getenv("ACADEMIC_AGENT_DISABLE_CLUSTER_ISOLATION", "0") == "1":
@@ -448,9 +498,7 @@ class SourceVideoTextAdapter:
     ) -> list[dict[str, Any]]:
         """Run the source project's KeyBERT fusion model by cluster or corpus."""
         self._load_custom_dictionary()
-        module = self._load(
-            "text_processor_subagent_stage_3.clustering.textKeyBert_cluster_sentence_fuse_agent"
-        )
+        module = self._load(self._source_module("keywords"))
         model = module.TextKeyBert()
         groups = data.groupby(group_column, dropna=False) if group_column else [("all", data)]
         rows: list[dict[str, Any]] = []
@@ -500,6 +548,11 @@ def _cluster_worker(payload: dict[str, Any], result_queue: Any) -> None:
             algorithm=payload["algorithm"],
             eps=payload["eps"],
             min_samples=payload["min_samples"],
+            linkage=payload.get("linkage", "ward"),
+            covariance_type=payload.get("covariance_type", "full"),
+            damping=payload.get("damping", 0.5),
+            bandwidth=payload.get("bandwidth"),
+            max_iter=payload.get("max_iter", 300),
             output_file=payload.get("output_file"),
         )
         result_queue.put({"success": True, "rows": result.to_dict("records")})

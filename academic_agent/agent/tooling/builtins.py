@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from academic_agent.agent.session import SessionContext
-from academic_agent.agent.tooling.handlers import data, mining, ml, project, rag, visualization
+from academic_agent.agent.tooling.handlers import (
+    data, mining, ml, project, rag, skills, text2sql, visualization,
+)
 from academic_agent.agent.tooling.registry import ToolSpec, tool_registry
 from academic_agent.infrastructure.workspace_manager import workspace_manager
 
@@ -20,12 +22,38 @@ def register_builtin_tools() -> None:
         ToolSpec("data_preprocess", "数据预处理", "数据理解", "执行缺失值处理和重复行处理，原始数据不覆盖", data.data_preprocess),
         ToolSpec("feature_processing", "特征处理", "机器学习", "识别数值/类别特征并完成填充、编码和标准化", data.feature_processing),
         ToolSpec("document_rag", "文档检索", "文档 RAG", "解析 PDF/Markdown/TXT/DOCX/CSV/JSON，按结构检索并返回带页码和引用的证据", rag.search_documents, requires_data=False),
-        ToolSpec("preprocess_text", "文本预处理", "文本挖掘", "调用 video_text_mutiplemodal_agent.Data_PreProcessor", mining.preprocess),
-        ToolSpec("sentiment_analysis", "情感分析", "文本挖掘", "调用 video_text_mutiplemodal_agent 情感模型", mining.sentiment),
-        ToolSpec("text_clustering", "文本聚类", "文本挖掘", "使用源项目 TextEmbedding 生成 BGE 向量，再由安全聚类适配层执行 KMeans/Agglomerative/DBSCAN", mining.clustering),
+        ToolSpec(
+            "text2sql_context",
+            "Text2SQL 语义上下文",
+            "Text2SQL",
+            "读取当前 MySQL 数据源的表结构、字段和已注册业务指标目录；不读取密码和整表数据",
+            text2sql.context,
+            requires_data=False,
+        ),
+        ToolSpec(
+            "text2sql_execute",
+            "执行 Text2SQL",
+            "Text2SQL",
+            "执行经过业务语义、表范围、只读和行数约束的 semantic_query，并返回可溯源 SQL",
+            text2sql.execute,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "semantic_query": {
+                        "type": "object",
+                        "description": "只引用 text2sql_context 返回的指标、维度、筛选和时间范围",
+                    },
+                },
+                "required": ["semantic_query"],
+            },
+            requires_data=False,
+        ),
+        ToolSpec("preprocess_text", "文本预处理", "文本挖掘", "调用已配置源项目的 Data_PreProcessor", mining.preprocess),
+        ToolSpec("sentiment_analysis", "情感分析", "文本挖掘", "调用已配置源项目的中文/通用情感模型", mining.sentiment),
+        ToolSpec("text_clustering", "文本聚类", "文本挖掘", "使用源项目 TextEmbedding 生成 BGE 向量，再由安全聚类适配层执行多种 sklearn 聚类算法", mining.clustering),
         ToolSpec("repair_sentiment_analysis", "修复情感分析结果", "文本挖掘", "按已有情感标签重建结果，不重新调用 BERT", mining.repair_sentiment),
         ToolSpec("repair_text_clustering", "修复聚类结果", "文本挖掘", "按已有聚类标签重建分布和特征，不重新调用 BERT/BGE", mining.repair_clustering),
-        ToolSpec("extract_keywords", "关键词提取", "文本挖掘", "调用 video_text_mutiplemodal_agent.TextKeyBert", mining.keywords),
+        ToolSpec("extract_keywords", "关键词提取", "文本挖掘", "调用已配置源项目的 TextKeyBert", mining.keywords),
         ToolSpec("entity_recognition", "实体识别", "文本挖掘", "使用可配置的 OpenAI-compatible 大模型识别实体并输出实体类型、位置和置信度", mining.entities),
         ToolSpec("relation_extraction", "关系抽取", "文本挖掘", "使用可配置的 OpenAI-compatible 大模型抽取主语-关系-宾语三元组", mining.relations),
         ToolSpec("regression", "回归分析", "机器学习", "调用项目 algorithms/machine_learning 回归类", ml.regression),
@@ -46,6 +74,41 @@ def register_builtin_tools() -> None:
         ToolSpec("edit_project_file", "编辑项目文件", "项目工作区", "预览并编辑当前项目文件，写入前需要确认", project.edit_project_file, requires_data=False),
         ToolSpec("delete_project_file", "删除项目文件", "项目工作区", "预览并删除当前项目文件，删除前需要确认", project.delete_project_file, requires_data=False),
         ToolSpec("confirm_workspace_operation", "确认文件操作", "项目工作区", "确认执行待处理的生成、编辑或删除操作", project.confirm_workspace_operation, requires_data=False),
+        ToolSpec(
+            "list_installed_skills",
+            "列出已安装 Skills",
+            "Skill 管理",
+            "列出当前应用已经安装的 Skill 名称、说明和来源",
+            skills.list_installed_skills,
+            requires_data=False,
+        ),
+        ToolSpec(
+            "install_skill",
+            "安装 Skill",
+            "Skill 管理",
+            "从当前项目的 skills 目录按名称查找，或从本地目录/SKILL.md、HTTPS/GitHub 来源安装包含 SKILL.md 的指令包；不执行包内脚本",
+            skills.install_skill,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Skill 名称（默认扫描项目 skills 目录），或本地目录/SKILL.md 路径、HTTPS 地址、github:owner/repository",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "可选，覆盖 SKILL.md frontmatter 中的 name",
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "是否覆盖同名已安装 Skill；只有用户明确要求更新/覆盖时才传 true",
+                        "default": False,
+                    },
+                },
+                "required": ["source"],
+            },
+            requires_data=False,
+        ),
     ]
     for spec in specs:
         tool_registry.register(spec)

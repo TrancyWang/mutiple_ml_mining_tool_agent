@@ -7,6 +7,7 @@ from typing import Any
 
 from academic_agent.agent.types import AgentPlan, AgentRequest
 from academic_agent.agent.session import session_store
+from academic_agent.agent.skills.manager import skill_manager
 
 
 class AgentContextBuilder:
@@ -72,6 +73,10 @@ class AgentContextBuilder:
                 f"{memory_context}\n"
                 "仅使用与当前请求相关的历史信息，无关内容必须忽略。"
             )
+
+        skill_context = skill_manager.prompt_context()
+        if skill_context:
+            system_parts.append(skill_context)
 
         if confirmed_information:
             system_parts.append(

@@ -4,9 +4,9 @@
 Windows 发布包不携带真实 .env 和本地大模型。用户可以在应用目录旁边配置
 .env，或者在界面中填写自己的模型地址/API Key。
 
-video_text_mutiplemodal_agent 是本地开发时的外部源项目，不在当前 Git 仓库中；
+text_mining_tools_agent_client_cpu 是本地开发时的外部源项目，不在当前 Git 仓库中；
 因此 Windows 包使用当前仓库内的算法和工具模块完成启动及通用功能。若发布时
-需要源项目的专用模型算法，可在构建机上额外提供 VIDEO_AGENT_SOURCE_ROOT，或
+需要源项目的专用模型算法，可在构建机上额外提供 TEXT_MINING_SOURCE_ROOT，或
 将源项目作为构建依赖加入 CI，不能依赖当前项目的父目录结构。
 """
 
@@ -43,6 +43,7 @@ hiddenimports = [
     "academic_agent.repositories",
     "academic_agent.tools",
     "academic_agent.views",
+    "mysql.connector",
     "PIL._tkinter_finder",
 ]
 

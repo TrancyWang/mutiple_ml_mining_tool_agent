@@ -71,6 +71,41 @@ def text_clustering_configuration() -> dict[str, Any]:
                     _parameter("min_samples", "最小样本数", "int", 5, 2, 50),
                 ],
             ),
+            _option(
+                "minibatch_kmeans",
+                "MiniBatchKMeans",
+                "用小批量迭代降低大样本数据的聚类成本。",
+                [_parameter("n_clusters", "聚类数量", "int", 5, 2, 50)],
+            ),
+            _option(
+                "gmm",
+                "Gaussian Mixture（GMM）",
+                "用高斯混合分布刻画软聚类结构，适合簇形状较规则的数据。",
+                [_parameter("n_clusters", "混合成分数", "int", 5, 2, 50)],
+            ),
+            _option(
+                "spectral",
+                "Spectral Clustering（谱聚类）",
+                "基于样本相似图划分簇，适合非凸形状的主题结构。",
+                [_parameter("n_clusters", "聚类数量", "int", 5, 2, 50)],
+            ),
+            _option(
+                "birch",
+                "Birch",
+                "逐步构建聚类树，适合较大规模的向量数据。",
+                [_parameter("n_clusters", "聚类数量", "int", 5, 2, 50)],
+            ),
+            _option(
+                "affinity_propagation",
+                "Affinity Propagation（亲和传播）",
+                "通过样本间消息传递自动选择代表点，不必预先指定簇数。",
+                [_parameter("damping", "阻尼系数", "float", 0.5, 0.5, 0.99, 0.05)],
+            ),
+            _option(
+                "meanshift",
+                "MeanShift（均值漂移）",
+                "按密度峰值自动发现簇，适合不确定主题数量的探索性分析。",
+            ),
         ],
     }
 

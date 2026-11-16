@@ -45,3 +45,8 @@ class AgentPolicy:
                 raise PolicyViolation("只能加载当前工作区文件或用户主动上传的文件。")
         if spec.name == "execute_python_analysis" and scope.plan.route.value == "chat":
             raise PolicyViolation("普通聊天不能执行临时代码。")
+        if spec.name in {"text2sql_context", "text2sql_execute"}:
+            from academic_agent.infrastructure.mysql_datasource import mysql_data_source
+
+            if not mysql_data_source.configured:
+                raise PolicyViolation("Text2SQL 需要先在设置中配置 MySQL 数据源和密码。")

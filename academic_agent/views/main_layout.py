@@ -3,9 +3,10 @@
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QPainter, QPen, QPixmap, QFont, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QMenu,
+    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QMenu,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
-    QSplitter, QStackedWidget, QStatusBar, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QStatusBar, QTextBrowser, QToolButton, QTreeWidget,
+    QVBoxLayout, QWidget,
 )
 
 from academic_agent.views.styles import BASE_STYLESHEET
@@ -14,27 +15,56 @@ from academic_agent.views.styles import BASE_STYLESHEET
 def build_main_window(window) -> None:
     self = window
     self.setWindowTitle("Academic Multimodal Text Mining Agent")
-    self.resize(1280, 820)
-    self.setMinimumSize(900, 620)
+    # 固定 1280x820 在小屏或系统缩放较大的环境中会超出可用屏幕，
+    # 底部输入区和状态栏因此看起来像被窗口边界遮住。启动时按屏幕
+    # 可用区域限制初始尺寸，同时保留足够的最小布局空间。
+    screen = QApplication.primaryScreen()
+    available = screen.availableGeometry() if screen is not None else None
+    available_width = max(320, (available.width() - 32) if available is not None else 1280)
+    available_height = max(300, (available.height() - 64) if available is not None else 820)
+    initial_width = min(1280, available_width)
+    initial_height = min(820, available_height)
+    self._compact_ui = initial_width < 1080
+    self.setMinimumSize(min(900, initial_width), min(620, initial_height))
+    self.resize(initial_width, initial_height)
     self.setFont(QFont("PingFang SC", 13))
     self.base_stylesheet = BASE_STYLESHEET
 
-    root = QWidget()
+    root = QWidget(objectName="app_root")
     self.setCentralWidget(root)
     root_layout = QHBoxLayout(root)
-    root_layout.setContentsMargins(0, 0, 0, 0)
+    root_layout.setContentsMargins(10, 10, 10, 10)
+    root_layout.setSpacing(10)
     splitter = QSplitter()
     self.main_splitter = splitter
+    splitter.setHandleWidth(8)
     root_layout.addWidget(splitter)
 
     sidebar = QFrame(objectName="sidebar")
-    sidebar.setMinimumWidth(270)
+    sidebar.setMinimumWidth(248)
     side_layout = QVBoxLayout(sidebar)
-    side_layout.setContentsMargins(12, 14, 12, 12)
-    side_layout.setSpacing(8)
+    side_layout.setContentsMargins(16, 16, 16, 14)
+    side_layout.setSpacing(10)
+
+    brand_bar = QFrame(objectName="brand_bar")
+    brand_layout = QHBoxLayout(brand_bar)
+    brand_layout.setContentsMargins(2, 2, 2, 2)
+    brand_layout.setSpacing(9)
+    brand_mark = QLabel("A", objectName="brand_mark")
+    brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    brand_mark.setFixedSize(34, 34)
+    brand_layout.addWidget(brand_mark)
+    brand_copy = QVBoxLayout()
+    brand_copy.setContentsMargins(0, 0, 0, 0)
+    brand_copy.setSpacing(0)
+    brand_copy.addWidget(QLabel("Academic Agent", objectName="brand_name"))
+    brand_copy.addWidget(QLabel("学术研究工作台", objectName="brand_subtitle"))
+    brand_layout.addLayout(brand_copy, 1)
+    side_layout.addWidget(brand_bar)
+
     self.mode_selector = QComboBox(objectName="mode_selector")
-    self.mode_selector.addItem("Academic Agent · Work", "work")
-    self.mode_selector.addItem("Academic Agent · Chat", "chat")
+    self.mode_selector.addItem("工作模式", "work")
+    self.mode_selector.addItem("聊天模式", "chat")
     self.mode_selector.setToolTip("Work：选择项目并使用工作区；Chat：只保留聊天历史")
     self.mode_selector.currentIndexChanged.connect(self._switch_agent_mode)
     side_layout.addWidget(self.mode_selector)
@@ -46,16 +76,19 @@ def build_main_window(window) -> None:
     project_layout = QVBoxLayout(self.project_section)
     project_layout.setContentsMargins(0, 0, 0, 0)
     project_layout.setSpacing(2)
-    project_layout.addWidget(QLabel("项目", objectName="section_title"))
-    self.sessions = QListWidget()
+    project_layout.addWidget(QLabel("工作区与对话", objectName="section_title"))
+    self.sessions = QTreeWidget()
+    self.sessions.setHeaderHidden(True)
+    self.sessions.setRootIsDecorated(True)
+    self.sessions.setIndentation(16)
     self.sessions.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.sessions.setTextElideMode(Qt.TextElideMode.ElideRight)
     self.sessions.itemClicked.connect(self._select_project)
     self.sessions.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
     self.sessions.customContextMenuRequested.connect(self._show_project_context_menu)
     self.sessions.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    self.sessions.setMinimumHeight(62)
-    self.sessions.setMaximumHeight(150)
+    self.sessions.setMinimumHeight(100)
+    self.sessions.setMaximumHeight(280)
     project_layout.addWidget(self.sessions)
 
     workspace_bar = QHBoxLayout()
@@ -88,6 +121,10 @@ def build_main_window(window) -> None:
     self.recent_sessions.customContextMenuRequested.connect(self._show_session_context_menu)
     self.recent_sessions.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     self.recent_sessions.setMinimumHeight(180)
+    # 对话已经按工作区嵌套显示在上面的树中，保留这个控件作为内部
+    # 兼容缓存，但不再在界面中重复展示全局会话列表。
+    self.recent_title.setVisible(False)
+    self.recent_sessions.setVisible(False)
     side_layout.addWidget(self.recent_sessions, 1)
     self.delete_project_shortcut = QShortcut(QKeySequence("Delete"), self.sessions)
     self.delete_project_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
@@ -126,14 +163,21 @@ def build_main_window(window) -> None:
     self._set_mode_visibility()
     splitter.addWidget(sidebar)
 
-    center = QWidget()
+    center = QFrame(objectName="main_panel")
     center_layout = QVBoxLayout(center)
     center_layout.setContentsMargins(0, 0, 0, 0)
     topbar = QFrame(objectName="topbar")
-    topbar.setMinimumHeight(56)
+    topbar.setMinimumHeight(68)
     topbar_layout = QHBoxLayout(topbar)
-    topbar_layout.setContentsMargins(16, 0, 16, 0)
-    topbar_layout.addWidget(QLabel("学术多模态 Agent", objectName="conversation_title"))
+    topbar_layout.setContentsMargins(22, 0, 18, 0)
+    topbar_copy = QVBoxLayout()
+    topbar_copy.setContentsMargins(0, 0, 0, 0)
+    topbar_copy.setSpacing(1)
+    topbar_copy.addWidget(QLabel("Academic Agent", objectName="conversation_title"))
+    topbar_copy.addWidget(QLabel("把资料、数据和研究任务放在一个工作台里完成", objectName="topbar_subtitle"))
+    topbar_layout.addLayout(topbar_copy, 1)
+    self.topbar_mode_label = QLabel("工作模式", objectName="topbar_badge")
+    topbar_layout.addWidget(self.topbar_mode_label)
     topbar_layout.addStretch()
 
     self.open_file_btn = QToolButton(objectName="open_file")
@@ -202,7 +246,8 @@ def build_main_window(window) -> None:
 
     composer_box = QFrame(objectName="composer_box")
     composer_layout = QVBoxLayout(composer_box)
-    composer_layout.setContentsMargins(8, 6, 8, 7)
+    composer_layout.setContentsMargins(10, 8, 10, 9)
+    composer_layout.setSpacing(2)
     self.upload_btn = QPushButton("上传文件", objectName="upload_button")
     self.upload_btn.setToolTip("上传数据或文档到当前对话")
     self.upload_btn.setAccessibleName("上传文件")
@@ -213,10 +258,22 @@ def build_main_window(window) -> None:
     self.composer.setFixedHeight(78)
     self.composer.installEventFilter(self)
     composer_layout.addWidget(self.composer)
+    hint_row = QHBoxLayout()
+    hint_row.setContentsMargins(5, 0, 5, 0)
+    self.composer_hint = QLabel("Enter 发送  ·  Shift + Enter 换行", objectName="composer_hint")
+    hint_row.addWidget(self.composer_hint)
+    hint_row.addStretch()
+    composer_layout.addLayout(hint_row)
     composer_bar = QHBoxLayout()
+    self.voice_btn = QPushButton("🎙 语音输入", objectName="voice_button")
+    self.voice_btn.setToolTip("录制一段语音，识别后回填到输入框；识别结果可修改后再发送")
+    self.voice_btn.setAccessibleName("语音输入")
+    self.voice_btn.setMinimumWidth(108)
+    self.voice_btn.clicked.connect(self.toggle_voice_input)
     self.send_btn = QPushButton("发送", objectName="send")
     self.send_btn.clicked.connect(self.send_message)
     composer_bar.addWidget(self.upload_btn)
+    composer_bar.addWidget(self.voice_btn)
     model_labels = {
         "auto": "自动",
         "gemini": "Gemini",
@@ -288,11 +345,19 @@ def build_main_window(window) -> None:
     splitter.addWidget(center)
 
     self.right_sidebar = QFrame(objectName="right_sidebar")
-    self.right_sidebar.setMinimumWidth(340)
-    self.right_sidebar.setMaximumWidth(480)
+    self.right_sidebar.setMinimumWidth(300)
+    self.right_sidebar.setMaximumWidth(390)
     right_layout = QVBoxLayout(self.right_sidebar)
-    right_layout.setContentsMargins(12, 14, 12, 12)
-    right_layout.setSpacing(8)
+    right_layout.setContentsMargins(14, 14, 14, 14)
+    right_layout.setSpacing(10)
+
+    panel_header = QFrame(objectName="panel_header")
+    panel_header_layout = QVBoxLayout(panel_header)
+    panel_header_layout.setContentsMargins(4, 2, 4, 2)
+    panel_header_layout.setSpacing(2)
+    panel_header_layout.addWidget(QLabel("工作区能力", objectName="panel_title"))
+    panel_header_layout.addWidget(QLabel("快速开始常用的研究任务", objectName="panel_subtitle"))
+    right_layout.addWidget(panel_header)
 
     self.right_content_stack = QStackedWidget()
     self.common_page = QWidget()
@@ -302,7 +367,7 @@ def build_main_window(window) -> None:
 
     self.common_toggle = QToolButton()
     self.common_toggle.setObjectName("common_toggle")
-    self.common_toggle.setText("常用功能")
+    self.common_toggle.setText("快捷任务")
     self.common_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     self.common_toggle.setArrowType(Qt.ArrowType.DownArrow)
     self.common_toggle.setCheckable(True)
@@ -334,9 +399,14 @@ def build_main_window(window) -> None:
     self.file_panel_open = False
     splitter.setStretchFactor(1, 1)
     splitter.setStretchFactor(2, 0)
-    splitter.setSizes([276, 664, 340])
+    splitter.setSizes(
+        [232, max(460, initial_width - 252), 0]
+        if self._compact_ui else [252, 680, 312]
+    )
     self.setStatusBar(QStatusBar())
     self.statusBar().setSizeGripEnabled(False)
     self.statusBar().showMessage("本地 Agent 已就绪")
     self._set_mode_visibility()
     self._apply_theme()
+    if hasattr(self, "_render_empty_chat"):
+        self._render_empty_chat()

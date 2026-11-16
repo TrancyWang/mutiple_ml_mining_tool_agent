@@ -38,6 +38,7 @@ lightgbm>=4.0.0
 
 # 数据处理
 openpyxl>=3.1.0  # Excel支持
+mysql-connector-python>=8.0.0  # 可选 MySQL Text2SQL 数据源
 pypdf>=4.0.0     # PDF文本提取
 PyMuPDF>=1.24.0  # PDF页图、坐标叠框与内嵌图片提取（Agentic RAG）
 python-docx>=1.1.0
@@ -47,6 +48,7 @@ odfpy>=1.4.1      # ODS
 
 # Agent 运行时
 qwen-agent>=0.0.34
+requests>=2.31.0  # DashScope/Deepgram/OpenAI-compatible 语音识别请求
 
 # PySide6 对话客户端
 PySide6>=6.7.0

@@ -12,8 +12,22 @@ from academic_agent.infrastructure.workspace_manager import WorkspaceManager, wo
 class WorkspaceMixin:
     """负责工作区切换、创建、刷新和操作权限设置。"""
 
+    def _workspace_switch_blocked(self) -> bool:
+        worker = getattr(self, "worker", None)
+        if worker is not None and worker.isRunning():
+            self.statusBar().showMessage("当前 Agent 任务仍在运行，请完成后再切换工作区")
+            QMessageBox.information(
+                self,
+                "暂不能切换工作区",
+                "当前 Agent 任务仍在运行。请等待任务完成后再切换工作区，避免任务结果写入错误的会话。",
+            )
+            return True
+        return False
+
     def create_workspace(self) -> None:
         if not self.ensure_authenticated():
+            return
+        if self._workspace_switch_blocked():
             return
         parent = QFileDialog.getExistingDirectory(
             self, "选择工作区位置", str(workspace_manager.root.parent)
@@ -46,6 +60,8 @@ class WorkspaceMixin:
     def select_workspace(self) -> None:
         if not self.ensure_authenticated():
             return
+        if self._workspace_switch_blocked():
+            return
         target = QFileDialog.getExistingDirectory(
             self, "选择已有工作区", str(workspace_manager.root.parent)
         )
@@ -56,6 +72,8 @@ class WorkspaceMixin:
                 QMessageBox.critical(self, "工作区切换失败", str(exc))
 
     def _activate_workspace(self, target: Path) -> None:
+        if self._workspace_switch_blocked():
+            return
         if hasattr(self, "controller"):
             target = self.controller.projects.activate(target)
         else:
@@ -67,6 +85,8 @@ class WorkspaceMixin:
             self._load_project_list()
         # 项目切换后不复用旧项目的活动会话，避免文件上下文和历史对话串项目。
         self.chat_view.clear()
+        if hasattr(self, "_render_empty_chat"):
+            self._render_empty_chat()
         if not hasattr(self, "controller"):
             self.messages.clear()
             self.current_assistant = ""
@@ -101,7 +121,7 @@ class WorkspaceMixin:
         self.statusBar().showMessage(f"工作区权限已设置：{selected}")
 
     def _refresh_workspace_label(self) -> None:
-        self.workspace_label.setText("当前项目")
+        self.workspace_label.setText(f"工作区 · {workspace_manager.root.name}")
         self.workspace_label.setToolTip(f"当前工作区\n{workspace_manager.root}")
         if hasattr(self, "workspace_path_label"):
             self.workspace_path_label.setText(str(workspace_manager.root))
